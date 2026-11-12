@@ -669,7 +669,8 @@ function helperSheet_(ss, name, headers) {
     var existing = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
     if (JSON.stringify(existing) !== JSON.stringify(headers)) fail_('SCHEMA_ERROR', '管理シートの見出しが一致しません。');
   }
-  if (typeof sheet.isSheetHidden !== 'function' || !sheet.isSheetHidden()) sheet.hideSheet();
+  // Administrative logs remain visible so the owner can inspect them.
+  if (typeof sheet.isSheetHidden !== 'function' || sheet.isSheetHidden()) sheet.showSheet();
   return sheet;
 }
 

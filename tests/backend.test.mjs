@@ -55,6 +55,7 @@ function fixture(options = {}) {
     getLastRow() { for (let i = this.data.length - 1; i >= 0; i--) if (this.data[i]?.some(v => v !== '' && v != null)) return i + 1; return 0; }
     getLastColumn() { return Math.max(0, ...this.data.map(r => r.reduce((last, v, i) => v !== '' && v != null ? i + 1 : last, 0))); }
     hideSheet() { this.hidden = true; return this; }
+    showSheet() { this.hidden = false; return this; }
     isSheetHidden() { return this.hidden; }
   }
   const master = new Sheet('社用車一覧', 1, [MASTER, [own(options, 'current', ''), 'ハイエース', '2027-02-12', 'テスト410え　8', '=HYPERLINK("https://docs.google.com/spreadsheets/d/test/edit#gid=21","運転日リンク")', own(options, 'initial', 120000), own(options, 'fuel', '軽油'), own(options, 'oil', 116000), options.mt ? 'MT' : 'AT']]);
@@ -156,6 +157,19 @@ test('startup reads do not recover pending writes; a stateful read performs reco
   assert.equal(f.ss.getSheetByName('_運転日報_リクエスト').data[1][3], 'pending');
   assert.equal(f.call('vehicleContext', { vehicleId: 'テスト410え8' }).data.activeTrip.status, 'active');
   assert.equal(f.ss.getSheetByName('_運転日報_リクエスト').data[1][3], 'committed');
+});
+
+test('management logs are created visible and stateful access reopens previously hidden logs', () => {
+  const f = fixture();
+  assert.equal(f.call('vehicleContext', { vehicleId: 'テスト410え8' }).ok, true);
+  const logs = ['_運転日報_記録管理', '_運転日報_リクエスト'].map(name => f.ss.getSheetByName(name));
+  assert.ok(logs.every(sheet => !sheet.isSheetHidden()));
+  logs.forEach(sheet => sheet.hideSheet());
+  assert.ok(logs.every(sheet => sheet.isSheetHidden()));
+  assert.equal(f.call('listHistory', { vehicleId: 'テスト410え8' }).ok, true);
+  assert.ok(logs.every(sheet => !sheet.isSheetHidden()));
+  assert.equal(f.start().ok, true);
+  assert.ok(logs.every(sheet => !sheet.isSheetHidden()));
 });
 
 test('after first completion a missing initial F does not block the next start', () => {
