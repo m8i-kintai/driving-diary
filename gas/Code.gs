@@ -99,6 +99,7 @@ function processRequest_(request) {
           var receiptOwner = request.action === 'finishTrip' && !blank_(receiptTrip.completedByEmployeeId)
             ? receiptTrip.completedByEmployeeId : receiptTrip.employeeId;
           assertSubject_(auth, receiptOwner);
+          requireTrip_(store, receiptTrip.id); // A cancelled receipt must never replay its old success.
           return JSON.parse(previous.values[5]);
         }
       }
@@ -108,7 +109,7 @@ function processRequest_(request) {
         case 'getTrip': data = { trip: publicTrip_(requireTrip_(store, payload.tripId)) }; break;
         case 'listHistory':
           var vehicle = requireVehicle_(ss, payload.vehicleId);
-          data = { trips: allTrips_(store).filter(function (t) { return t.vehicleId === vehicle.id; })
+          data = { trips: allTrips_(store).filter(function (t) { return t.vehicleId === vehicle.id && t.status !== 'cancelled'; })
             .sort(function (a, b) { return b.startedAt.localeCompare(a.startedAt); }).map(publicTrip_) };
           break;
         case 'startTrip': return startTrip_(ss, store, request, auth, fingerprint);
@@ -263,6 +264,176 @@ function finishTrip_(ss, store, request, auth, fingerprint) {
   return response;
 }
 
+// Owner-only administration. These private helpers are deliberately absent from
+// doPost. Use a temporary editor-only owner wrapper, inspect the preview first,
+// and remove the wrapper before deploying. No physical rows are deleted.
+function previewCancelLatestTrip_(tripId, reason) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(25000);
+  try {
+    var ss = spreadsheet_(), store = existingStore_(ss);
+    assertNoPendingAdmin_(store);
+    return cancellationPlan_(ss, store, tripId, reason).summary;
+  } finally { lock.releaseLock(); }
+}
+
+function cancelLatestTrip_(tripId, reason) {
+  var id = text_(tripId, '取消対象の記録ID', 128, true);
+  var cancellationReason = text_(reason, '取消理由', 2000, true);
+  var requestId = 'admin-cancel:' + id;
+  var fingerprint = stableJson_({ tripId: id, reason: cancellationReason });
+  var lock = LockService.getScriptLock();
+  lock.waitLock(25000);
+  try {
+    var ss = spreadsheet_(), store = existingStore_(ss);
+    var previous = findRequest_(store.requests, requestId);
+    if (previous) {
+      if (previous.values[1] !== 'adminCancelTrip' || previous.values[2] !== fingerprint) {
+        fail_('REQUEST_ID_REUSED', 'この記録の取消操作は別の理由で保存されています。管理記録を確認してください。');
+      }
+      assertNoPendingAdmin_(store, requestId);
+      if (previous.values[3] === 'pending') {
+        applyOperation_(ss, store, JSON.parse(previous.values[4]));
+        SpreadsheetApp.flush();
+        store.requests.getRange(previous.row, 4).setValue('committed');
+        SpreadsheetApp.flush();
+      } else if (previous.values[3] !== 'committed') {
+        fail_('CANCEL_UNSAFE', '取消操作の状態を管理者が確認してください。');
+      }
+      return JSON.parse(previous.values[5]).data;
+    }
+    assertNoPendingAdmin_(store);
+    var plan = cancellationPlan_(ss, store, id, cancellationReason);
+    var response = { ok: true, data: plan.summary, requestId: requestId };
+    commitOperation_(ss, store, { requestId: requestId, action: 'adminCancelTrip' }, fingerprint, plan.operation, response);
+    return plan.summary;
+  } finally {
+    try { SpreadsheetApp.flush(); } finally { lock.releaseLock(); }
+  }
+}
+
+// Reading an administrative preview must not create or hide helper sheets.
+function existingStore_(ss) {
+  var result = {};
+  [['trips', DRIVE_LOG_.trips, DRIVE_LOG_.tripHeaders], ['requests', DRIVE_LOG_.requests, DRIVE_LOG_.requestHeaders]].forEach(function (entry) {
+    var sheet = ss.getSheetByName(entry[1]);
+    if (!sheet || JSON.stringify(sheet.getRange(1, 1, 1, entry[2].length).getValues()[0]) !== JSON.stringify(entry[2])) {
+      fail_('SCHEMA_ERROR', '取消前に管理シートの存在と見出しを確認してください。');
+    }
+    result[entry[0]] = sheet;
+  });
+  return result;
+}
+
+function assertNoPendingAdmin_(store, allowedRequestId) {
+  var count = store.requests.getLastRow() - 1;
+  if (count > 0 && store.requests.getRange(2, 1, count, 4).getValues().some(function (row) {
+    return row[3] === 'pending' && row[0] !== allowedRequestId;
+  })) fail_('ADMIN_PENDING_REQUESTS', '未完了の保存処理があります。先に通常の保存回復を確認してください。');
+}
+
+function cancellationPlan_(ss, store, tripId, reason) {
+  var id = text_(tripId, '取消対象の記録ID', 128, true);
+  var cancellationReason = text_(reason, '取消理由', 2000, true);
+  var trip = requireTrip_(store, id);
+  if (trip.status !== 'completed') fail_('CANCEL_UNSAFE', '完了済みの最新記録だけを取り消せます。');
+  var vehicle = requireVehicle_(ss, trip.vehicleId);
+  var sheet = sheetById_(ss, trip.sheetId);
+  if (!sheet || resolveVehicleSheet_(ss, vehicle).getSheetId() !== trip.sheetId) fail_('SCHEMA_ERROR', '取消対象の車両シートを確認してください。');
+  var table = table_(sheet, TRIP_SCHEMA_);
+  var finish = committedFinish_(store, trip);
+  if (stableJson_(finish.operation.trip) !== stableJson_(trip)) fail_('CANCEL_UNSAFE', '管理記録と完了時の保存内容が一致しません。');
+  var expected = canonicalTripFields_(finish.operation.fields, sheetTimeZone_(sheet));
+  var visible = rowFields_(sheet, table, trip.rowNumber);
+  Object.keys(TRIP_SCHEMA_).forEach(function (key) {
+    if (!Object.prototype.hasOwnProperty.call(expected, key) || !blank_(visible[key]) && !sameCell_(visible[key], expected[key])) {
+      fail_('ROW_CONFLICT', '取消対象の記録行に完了時と異なる値があります。管理者に確認してください。');
+    }
+  });
+  assertCancellationLatest_(ss, store, trip, finish.row);
+  var remaining = vehicleState_(ss, vehicle, store, trip);
+  var restored = remaining.latestEnd === null ? vehicle.initialOdometer : remaining.latestEnd;
+  var cancelled = Object.assign({}, trip, { status: 'cancelled', cancelledAt: nowJst_(), cancellationReason: cancellationReason,
+    cancelRequestId: 'admin-cancel:' + trip.id });
+  var summary = { tripId: trip.id, vehicleId: trip.vehicleId, vehicleNumber: trip.vehicleNumber,
+    sheetId: trip.sheetId, rowNumber: trip.rowNumber, sheetUrl: sheetUrl_(ss, trip.sheetId),
+    startedAt: trip.startedAt, completedAt: trip.completedAt, startOdometer: trip.startOdometer,
+    endOdometer: trip.endOdometer, distance: trip.distance, recordedDriverName: recordedDriverName_(trip),
+    reason: cancellationReason, restoredOdometer: restored, visibleFields: visible, committedFields: expected };
+  return { summary: summary, operation: { kind: 'cancel', trip: cancelled, fields: blankTripFields_(), previousFields: expected,
+    restoredOdometer: restored, finishJournalRow: finish.row,
+    backup: { trip: trip, visibleFields: visible, masterCurrentOdometer: vehicle.currentOdometer,
+      finishRequest: finish.values.slice() } } };
+}
+
+function committedFinish_(store, trip) {
+  var receipt = findRequest_(store.requests, trip.finishRequestId);
+  if (!receipt || receipt.values[1] !== 'finishTrip' || receipt.values[3] !== 'committed') fail_('CANCEL_UNSAFE', '確定済みの完了保存履歴が見つかりません。');
+  var operation = JSON.parse(receipt.values[4]);
+  if (operation.kind !== 'finish' || operation.trip.id !== trip.id || operation.trip.status !== 'completed') fail_('CANCEL_UNSAFE', '完了保存履歴と取消対象が一致しません。');
+  return { row: receipt.row, values: receipt.values, operation: operation };
+}
+
+function assertCancellationLatest_(ss, store, trip, finishJournalRow) {
+  var started = Date.parse(trip.startedAt), completed = Date.parse(trip.completedAt);
+  if (!isFinite(started) || !isFinite(completed)) fail_('CANCEL_UNSAFE', '取消対象の日時を確認してください。');
+  allTrips_(store).forEach(function (other) {
+    if (other.id === trip.id || other.vehicleId !== trip.vehicleId || other.status === 'cancelled') return;
+    if (other.status !== 'completed') fail_('CANCEL_NOT_LATEST', 'この車両に運転中または状態不明の記録があります。');
+    var otherStarted = Date.parse(other.startedAt), otherCompleted = Date.parse(other.completedAt);
+    if (!isFinite(otherStarted) || !isFinite(otherCompleted)) fail_('CANCEL_UNSAFE', '同じ車両の既存記録の日時を確認してください。');
+    if (otherStarted > started || otherCompleted > completed ||
+        otherCompleted === completed && committedFinish_(store, other).row > finishJournalRow) {
+      fail_('CANCEL_NOT_LATEST', '後続の運転記録があります。最新の記録から取り消してください。');
+    }
+  });
+  // Visible manual records have no ledger. Check them independently, and refuse
+  // ambiguous same-minute records instead of guessing an ordering from row order.
+  var sheet = sheetById_(ss, trip.sheetId), table = table_(sheet, TRIP_SCHEMA_);
+  var count = sheet.getLastRow() - table.headerRow;
+  for (var i = 0; i < count; i++) {
+    var rowNumber = table.headerRow + 1 + i;
+    if (rowNumber === trip.rowNumber) continue;
+    var fields = rowFields_(sheet, table, rowNumber);
+    if (Object.keys(fields).every(function (key) { return blank_(fields[key]); })) continue;
+    if (blank_(fields.date) || blank_(fields.startTime) || blank_(fields.endTime) || blank_(fields.endOdometer)) {
+      fail_('CANCEL_NOT_LATEST', '車両シートに未完了または日時不明の別記録があります。');
+    }
+    var startClock = clockMilliseconds_(fields.startTime), endClock = clockMilliseconds_(fields.endTime);
+    var stamp = Date.parse(fields.date + 'T00:00:00+09:00') + endClock + (endClock < startClock ? 86400000 : 0);
+    if (!isFinite(stamp) || stamp >= Math.floor(completed / 60000) * 60000) {
+      // A matching earlier app record has an exact ledger instant, unlike a
+      // manual same-minute row. This also permits rapid successive test trips.
+      var managedEarlier = allTrips_(store).filter(function (t) {
+        return t.id !== trip.id && t.vehicleId === trip.vehicleId && t.status === 'completed' &&
+          t.sheetId === trip.sheetId && t.rowNumber === rowNumber && Date.parse(t.completedAt) <= completed;
+      }).some(function (t) {
+        var finish = committedFinish_(store, t);
+        var expected = canonicalTripFields_(finish.operation.fields, sheetTimeZone_(sheet));
+        return finish.row < finishJournalRow && Object.keys(TRIP_SCHEMA_).every(function (key) { return sameCell_(fields[key], expected[key]); });
+      });
+      if (!managedEarlier) fail_('CANCEL_NOT_LATEST', '車両シートに後続または前後関係が不明な記録があります。');
+    }
+  }
+}
+
+function validateCancellationApply_(ss, store, operation, existing) {
+  var original = operation.backup && operation.backup.trip;
+  if (!original || !existing || existing.id !== original.id ||
+      existing.status !== 'cancelled' && stableJson_(existing) !== stableJson_(original) ||
+      existing.status === 'cancelled' && existing.cancelRequestId !== operation.trip.cancelRequestId) {
+    fail_('CANCEL_UNSAFE', '取消対象の管理記録が変更されています。');
+  }
+  assertCancellationLatest_(ss, store, original, operation.finishJournalRow);
+  var vehicle = requireVehicle_(ss, original.vehicleId);
+  var remaining = vehicleState_(ss, vehicle, store, original);
+  var restored = remaining.latestEnd === null ? vehicle.initialOdometer : remaining.latestEnd;
+  if (restored !== operation.restoredOdometer) fail_('CANCEL_STATE_CHANGED', '取消後の距離基準が変更されています。再確認してください。');
+  if (vehicle.currentOdometer !== null && vehicle.currentOdometer !== operation.backup.masterCurrentOdometer && vehicle.currentOdometer !== restored) {
+    fail_('CANCEL_STATE_CHANGED', '社用車一覧の現在距離が変更されています。再確認してください。');
+  }
+}
+
 // Write-ahead journal: reserve the exact row before writing the visible sheet.
 // Stateful reads and mutations recover pending operations under the same lock.
 function commitOperation_(ss, store, request, fingerprint, operation, response) {
@@ -283,8 +454,14 @@ function recoverPending_(ss, store) {
   statuses.forEach(function (entry, index) {
     if (entry[0] !== 'pending') return;
     var row = index + 2;
-    var raw = store.requests.getRange(row, 5).getValue();
-    applyOperation_(ss, store, JSON.parse(raw));
+    var operation = JSON.parse(store.requests.getRange(row, 5).getValue());
+    var existing = allTrips_(store).filter(function (t) { return t.id === operation.trip.id; })[0];
+    if (operation.kind !== 'cancel' && existing && existing.status === 'cancelled') {
+      store.requests.getRange(row, 4).setValue('cancelled');
+      SpreadsheetApp.flush();
+      return;
+    }
+    applyOperation_(ss, store, operation);
     SpreadsheetApp.flush();
     store.requests.getRange(row, 4).setValue('committed');
     SpreadsheetApp.flush();
@@ -293,6 +470,9 @@ function recoverPending_(ss, store) {
 
 function applyOperation_(ss, store, operation) {
   var trip = operation.trip;
+  var existing = allTrips_(store).filter(function (t) { return t.id === trip.id; })[0];
+  if (operation.kind !== 'cancel' && existing && existing.status === 'cancelled') fail_('TRIP_CANCELLED', 'この運転記録は管理者により取り消されています。車両を選び直してください。');
+  if (operation.kind === 'cancel') validateCancellationApply_(ss, store, operation, existing);
   var sheet = sheetById_(ss, trip.sheetId);
   if (!sheet) fail_('SCHEMA_ERROR', '記録先シートが見つかりません。管理者に確認してください。');
   var table = table_(sheet, TRIP_SCHEMA_);
@@ -322,6 +502,10 @@ function applyOperation_(ss, store, operation) {
   if (operation.kind === 'finish') {
     var vehicle = requireVehicle_(ss, trip.vehicleId);
     vehicle.masterSheet.getRange(vehicle.masterRow, vehicle.masterMap.currentOdometer + 1).setValue(trip.endOdometer);
+  } else if (operation.kind === 'cancel') {
+    var restoredVehicle = requireVehicle_(ss, trip.vehicleId);
+    restoredVehicle.masterSheet.getRange(restoredVehicle.masterRow, restoredVehicle.masterMap.currentOdometer + 1)
+      .setValue(operation.restoredOdometer === null ? '' : operation.restoredOdometer);
   }
   saveTrip_(store, trip);
 }
@@ -337,7 +521,7 @@ function vehicleContext_(ss, store, id) {
     warnings: warnings_(vehicle, oil, nowJst_().slice(0, 10)), startOdometer: start };
 }
 
-function vehicleState_(ss, vehicle, store) {
+function vehicleState_(ss, vehicle, store, excludedTrip) {
   var sheet = resolveVehicleSheet_(ss, vehicle);
   var table = table_(sheet, TRIP_SCHEMA_);
   var timeZone = sheetTimeZone_(sheet);
@@ -351,7 +535,7 @@ function vehicleState_(ss, vehicle, store) {
   }
   // The ledger has the actual completion instant, including trips lasting >24 h.
   allTrips_(store).forEach(function (trip) {
-    if (trip.vehicleId !== vehicle.id || trip.status !== 'completed') return;
+    if (trip.vehicleId !== vehicle.id || trip.status !== 'completed' || excludedTrip && trip.id === excludedTrip.id) return;
     if (typeof trip.completedAt !== 'string' || !trip.completedAt) fail_('SCHEMA_ERROR', '管理用の完了日時を確認してください。');
     consider(Date.parse(trip.completedAt), numeric_(trip.endOdometer, '既存の終了メーター', false), trip.oilChanged === true);
   });
@@ -359,6 +543,7 @@ function vehicleState_(ss, vehicle, store) {
   if (count > 0) {
     var rows = sheet.getRange(table.headerRow + 1, 1, count, table.width).getValues();
     for (var i = 0; i < rows.length; i++) {
+      if (excludedTrip && excludedTrip.sheetId === sheet.getSheetId() && excludedTrip.rowNumber === table.headerRow + 1 + i) continue;
       var row = rows[i];
       if (blank_(row[table.map.endTime]) || blank_(row[table.map.endOdometer])) continue;
       var end = numeric_(row[table.map.endOdometer], '既存の終了メーター', false);
@@ -505,6 +690,7 @@ function allTrips_(store) {
 function requireTrip_(store, id) {
   var trip = allTrips_(store).filter(function (t) { return t.id === id; })[0];
   if (!trip) fail_('TRIP_NOT_FOUND', '運転記録が見つかりません。車両を選び直してください。');
+  if (trip.status === 'cancelled') fail_('TRIP_CANCELLED', 'この運転記録は管理者により取り消されています。車両を選び直してください。');
   return trip;
 }
 

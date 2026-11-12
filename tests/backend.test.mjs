@@ -707,3 +707,184 @@ test('typed Sheets does not discard manually changed seconds or a changed calend
   assert.equal(day.finish(second.id).error.code, 'ROW_CONFLICT');
   assert.equal(day.cell('終了メーター(km)'), '');
 });
+
+test('private cancellation preview is read-only and cancellation retains an audit tombstone', () => {
+  const f = fixture({ typedSheets: true });
+  const startPayload = {};
+  const first = f.start(startPayload, { requestId: 'cancel-first-start' }).data.trip;
+  f.now += 600000;
+  const finishPayload = { oilChanged: true, notes: '取消対象のテスト' };
+  assert.equal(f.finish(first.id, finishPayload, { requestId: 'cancel-first-finish' }).ok, true);
+  f.vehicle.data[0].push('対象外の列'); f.vehicle.data[1].push('保持する値');
+  // Simulate the user's partial manual clearing without reconstructing lost data.
+  f.vehicle.data[1][HEADERS.indexOf('走行距離(km)')] = '';
+  f.master.data[1][MASTER.indexOf('現在の距離')] = '';
+  const writesBeforePreview = f.writes.length;
+  const preview = plain(f.context.previewCancelLatestTrip_(first.id, 'テストを元に戻す'));
+  assert.equal(f.writes.length, writesBeforePreview);
+  assert.equal(preview.tripId, first.id);
+  assert.equal(preview.restoredOdometer, 120000);
+  assert.equal(preview.committedFields.distance, 120);
+  assert.equal(preview.visibleFields.distance, '');
+  assert.throws(() => f.context.cancelLatestTrip_(first.id, ''), { driveLogCode: 'VALIDATION_ERROR' });
+  const cancelled = plain(f.context.cancelLatestTrip_(first.id, 'テストを元に戻す'));
+  assert.equal(cancelled.restoredOdometer, 120000);
+  assert.ok(f.vehicle.data[1].slice(0, HEADERS.length).every(v => v === ''));
+  assert.equal(f.vehicle.data[1][HEADERS.length], '保持する値');
+  assert.equal(f.master.data[1][MASTER.indexOf('現在の距離')], 120000);
+  assert.equal(f.master.data[1][MASTER.indexOf('初回確認時の距離')], 120000);
+  const ledger = f.ss.getSheetByName('_運転日報_記録管理');
+  const tombstone = JSON.parse(ledger.data[1][3]);
+  assert.equal(tombstone.status, 'cancelled');
+  assert.equal(tombstone.cancellationReason, 'テストを元に戻す');
+  assert.equal(tombstone.endOdometer, 120120);
+  assert.equal(tombstone.cancelledAt, '2026-11-12T09:15:00.000+09:00');
+  const requests = f.ss.getSheetByName('_運転日報_リクエスト');
+  assert.equal(requests.data.length, 4);
+  const journal = JSON.parse(requests.data[3][4]);
+  assert.equal(journal.kind, 'cancel');
+  assert.equal(journal.backup.trip.status, 'completed');
+  assert.equal(journal.backup.visibleFields.distance, '');
+  assert.equal(journal.backup.finishRequest[0], 'cancel-first-finish');
+  assert.equal(journal.previousFields.distance, 120);
+  assert.equal(f.call('getTrip', { tripId: first.id }).error.code, 'TRIP_CANCELLED');
+  assert.deepEqual(f.call('listHistory', { vehicleId: first.vehicleId }).data.trips, []);
+  const context = f.call('vehicleContext', { vehicleId: first.vehicleId }).data;
+  assert.equal(context.startOdometer, 120000);
+  assert.equal(context.activeTrip, null);
+  assert.equal(context.oil.baseline, 116000);
+  assert.equal(f.start(startPayload, { requestId: 'cancel-first-start' }).error.code, 'TRIP_CANCELLED');
+  assert.equal(f.finish(first.id, finishPayload, { requestId: 'cancel-first-finish' }).error.code, 'TRIP_CANCELLED');
+  const writesBeforeRetry = f.writes.length;
+  assert.deepEqual(plain(f.context.cancelLatestTrip_(first.id, 'テストを元に戻す')), cancelled);
+  assert.equal(f.writes.length, writesBeforeRetry);
+  assert.equal(f.call('cancelLatestTrip', { tripId: first.id, reason: '公開不可' }).error.code, 'VALIDATION_ERROR');
+  assert.equal(f.start().data.trip.startOdometer, 120000);
+});
+
+test('two same-clock test trips cancel newest first and restore preceding meter then initial F', () => {
+  const f = fixture({ typedSheets: true, initial: 100, oil: 50 });
+  const one = f.start().data.trip;
+  f.finish(one.id, { endOdometer: 104, oilChanged: true });
+  const two = f.start().data.trip;
+  f.finish(two.id, { endOdometer: 106 });
+  assert.throws(() => f.context.previewCancelLatestTrip_(one.id, 'テスト取消'), { driveLogCode: 'CANCEL_NOT_LATEST' });
+  assert.equal(plain(f.context.previewCancelLatestTrip_(two.id, 'テスト取消')).restoredOdometer, 104);
+  assert.equal(plain(f.context.cancelLatestTrip_(two.id, 'テスト取消')).restoredOdometer, 104);
+  assert.equal(f.master.data[1][0], 104);
+  assert.equal(f.call('vehicleContext', { vehicleId: one.vehicleId }).data.oil.baseline, 104);
+  assert.equal(plain(f.context.cancelLatestTrip_(one.id, 'テスト取消')).restoredOdometer, 100);
+  assert.equal(f.master.data[1][0], 100);
+  const context = f.call('vehicleContext', { vehicleId: one.vehicleId }).data;
+  assert.equal(context.startOdometer, 100);
+  assert.equal(context.oil.baseline, 50);
+  assert.deepEqual(f.call('listHistory', { vehicleId: one.vehicleId }).data.trips, []);
+  assert.equal(f.ss.getSheetByName('_運転日報_記録管理').data.length, 3);
+});
+
+test('fully cleared test rows can still be cancelled from their committed finish journal', () => {
+  const f = fixture({ initial: 100 });
+  const trip = f.start().data.trip; f.finish(trip.id, { endOdometer: 104 });
+  f.vehicle.data[1] = Array(HEADERS.length).fill('');
+  f.master.data[1][0] = '';
+  assert.equal(plain(f.context.previewCancelLatestTrip_(trip.id, '入力テスト取消')).restoredOdometer, 100);
+  f.context.cancelLatestTrip_(trip.id, '入力テスト取消');
+  assert.equal(f.master.data[1][0], 100);
+  assert.equal(f.call('vehicleContext', { vehicleId: trip.vehicleId }).data.startOdometer, 100);
+});
+
+test('cancellation refuses an active successor and conflicting nonblank row changes without writing', () => {
+  const active = fixture(); const first = active.start().data.trip; active.finish(first.id);
+  active.start();
+  let before = active.writes.length;
+  assert.throws(() => active.context.cancelLatestTrip_(first.id, '取消'), { driveLogCode: 'CANCEL_NOT_LATEST' });
+  assert.equal(active.writes.length, before);
+  const changed = fixture(); const trip = changed.start().data.trip; changed.finish(trip.id);
+  changed.vehicle.data[1][HEADERS.indexOf('備考・不具合')] = '後で追記した大事な値';
+  before = changed.writes.length;
+  assert.throws(() => changed.context.cancelLatestTrip_(trip.id, '取消'), { driveLogCode: 'ROW_CONFLICT' });
+  assert.equal(changed.writes.length, before);
+  assert.equal(changed.cell('終了メーター(km)'), 120120);
+});
+
+test('cancellation checks manual visible successors and incomplete records outside the ledger', () => {
+  for (const manual of ['completed', 'active', 'same-minute']) {
+    const f = fixture(); const trip = f.start().data.trip; f.now += 3600000; f.finish(trip.id);
+    const row = [...f.vehicle.data[1]];
+    if (manual === 'completed') row[HEADERS.indexOf('終了時間')] = '11:00';
+    if (manual === 'active') { row[HEADERS.indexOf('終了時間')] = ''; row[HEADERS.indexOf('終了メーター(km)')] = ''; }
+    f.vehicle.data.push(row);
+    const before = f.writes.length;
+    assert.throws(() => f.context.cancelLatestTrip_(trip.id, '取消'), { driveLogCode: 'CANCEL_NOT_LATEST' });
+    assert.equal(f.writes.length, before);
+  }
+});
+
+test('cancellation recovers after visible clear, master update, ledger write and commit acknowledgement loss', () => {
+  const failures = [
+    { sheet: 'the gid is authoritative', row: 2, col: 1, after: true },
+    { sheet: '社用車一覧', row: 2, col: 1, after: true },
+    { sheet: '_運転日報_記録管理', row: 2, col: 1, after: true },
+    { sheet: '_運転日報_リクエスト', row: 4, col: 4, after: true }
+  ];
+  for (const failure of failures) {
+    const f = fixture({ typedSheets: true }); const trip = f.start().data.trip; f.now += 600000; f.finish(trip.id);
+    f.fail = failure;
+    assert.throws(() => f.context.cancelLatestTrip_(trip.id, '回復テスト'), /Simulated/);
+    // Ordinary stateful reads recover a pending administrative operation too.
+    const context = f.call('vehicleContext', { vehicleId: trip.vehicleId });
+    assert.equal(context.ok, true, JSON.stringify(context));
+    assert.equal(context.data.startOdometer, 120000);
+    assert.equal(f.master.data[1][0], 120000);
+    assert.ok(f.vehicle.data[1].slice(0, HEADERS.length).every(v => v === ''));
+    assert.equal(f.call('getTrip', { tripId: trip.id }).error.code, 'TRIP_CANCELLED');
+    assert.equal(f.ss.getSheetByName('_運転日報_リクエスト').data[3][3], 'committed');
+    assert.equal(plain(f.context.cancelLatestTrip_(trip.id, '回復テスト')).restoredOdometer, 120000);
+    assert.equal(f.ss.getSheetByName('_運転日報_リクエスト').data.length, 4);
+  }
+});
+
+test('pending cancellation refuses subsequent row or baseline changes on recovery', () => {
+  for (const field of ['row', 'baseline', 'manualSuccessor', 'master']) {
+    const f = fixture(); const trip = f.start().data.trip; f.now += 3600000; f.finish(trip.id);
+    f.fail = { sheet: 'the gid is authoritative', row: 2, col: 1 };
+    assert.throws(() => f.context.cancelLatestTrip_(trip.id, '取消途中'), /Simulated/);
+    if (field === 'row') f.vehicle.data[1][HEADERS.indexOf('備考・不具合')] = '別の編集';
+    if (field === 'baseline') f.master.data[1][MASTER.indexOf('初回確認時の距離')] = 555;
+    if (field === 'master') f.master.data[1][0] = 555;
+    if (field === 'manualSuccessor') { const row = [...f.vehicle.data[1]]; row[HEADERS.indexOf('終了時間')] = '11:00'; f.vehicle.data.push(row); }
+    const response = f.call('vehicleContext', { vehicleId: trip.vehicleId });
+    assert.equal(response.ok, false);
+    assert.equal(response.error.code, field === 'row' ? 'ROW_CONFLICT' : field === 'manualSuccessor' ? 'CANCEL_NOT_LATEST' : 'CANCEL_STATE_CHANGED');
+    assert.equal(JSON.parse(f.ss.getSheetByName('_運転日報_記録管理').data[1][3]).status, 'completed');
+  }
+});
+
+test('old pending start or finish operations never resurrect a cancelled tombstone', () => {
+  const f = fixture(); const trip = f.start({}, { requestId: 'tombstone-start' }).data.trip;
+  f.finish(trip.id, {}, { requestId: 'tombstone-finish' });
+  f.context.cancelLatestTrip_(trip.id, '取消済');
+  const requests = f.ss.getSheetByName('_運転日報_リクエスト');
+  requests.data[1][3] = 'pending'; requests.data[2][3] = 'pending';
+  const context = f.call('vehicleContext', { vehicleId: trip.vehicleId });
+  assert.equal(context.ok, true);
+  assert.equal(context.data.startOdometer, 120000);
+  assert.equal(requests.data[1][3], 'cancelled');
+  assert.equal(requests.data[2][3], 'cancelled');
+  assert.equal(f.start({}, { requestId: 'tombstone-start' }).error.code, 'TRIP_CANCELLED');
+  assert.equal(f.finish(trip.id, {}, { requestId: 'tombstone-finish' }).error.code, 'TRIP_CANCELLED');
+  assert.ok(f.vehicle.data[1].slice(0, HEADERS.length).every(v => v === ''));
+});
+
+test('administrative preview rejects unrelated pending writes and does not initialize helpers', () => {
+  const empty = fixture();
+  assert.throws(() => empty.context.previewCancelLatestTrip_('unknown-trip', '理由'), { driveLogCode: 'SCHEMA_ERROR' });
+  assert.equal(empty.writes.length, 0);
+  assert.equal(empty.sheets.length, 3);
+  const f = fixture(); const trip = f.start().data.trip; f.finish(trip.id);
+  f.ss.getSheetByName('_運転日報_リクエスト').data[1][3] = 'pending';
+  const before = f.writes.length;
+  assert.throws(() => f.context.previewCancelLatestTrip_(trip.id, '理由'), { driveLogCode: 'ADMIN_PENDING_REQUESTS' });
+  assert.throws(() => f.context.cancelLatestTrip_(trip.id, '理由'), { driveLogCode: 'ADMIN_PENDING_REQUESTS' });
+  assert.equal(f.writes.length, before);
+});

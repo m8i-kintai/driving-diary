@@ -12,7 +12,7 @@ const MODELS = new Set(['hiace', 'hijet', 'succeed', 'probox', 'toyoace']);
 const STORE = `drive-log:${isDemo ? 'preview' : 'live'}:v1:`;
 const PERSONAL_KEYS = new Set(['draft', 'pending-start', 'pending-finish', 'active-trip']);
 let storageEmployeeId = '';
-const DEFINITIVE_ERRORS = new Set(['VALIDATION_ERROR', 'EMPLOYEE_NOT_FOUND', 'VEHICLE_NOT_FOUND', 'INITIAL_ODOMETER_REQUIRED', 'VEHICLE_IN_USE', 'TRIP_NOT_FOUND', 'TRIP_ALREADY_COMPLETED', 'ODOMETER_DECREASE', 'REQUEST_ID_REUSED', 'EMPLOYEE_MISMATCH', 'UNAUTHORIZED', 'KINJIRO_SESSION_EXPIRED', 'CONFIGURATION_ERROR', 'UNCONFIGURED', 'ROW_CONFLICT', 'SCHEMA_ERROR', 'ALCOHOL_PRESENT']);
+const DEFINITIVE_ERRORS = new Set(['VALIDATION_ERROR', 'EMPLOYEE_NOT_FOUND', 'VEHICLE_NOT_FOUND', 'INITIAL_ODOMETER_REQUIRED', 'VEHICLE_IN_USE', 'TRIP_NOT_FOUND', 'TRIP_ALREADY_COMPLETED', 'TRIP_CANCELLED', 'ODOMETER_DECREASE', 'REQUEST_ID_REUSED', 'EMPLOYEE_MISMATCH', 'UNAUTHORIZED', 'KINJIRO_SESSION_EXPIRED', 'CONFIGURATION_ERROR', 'UNCONFIGURED', 'ROW_CONFLICT', 'SCHEMA_ERROR', 'ALCOHOL_PRESENT']);
 const state = {
   phase: 'loading', vehicles: [], departments: [], context: null, contextLoading: false,
   employee: null, favorites: [], trip: null, busy: false,
@@ -75,6 +75,7 @@ function errorMessage(error) {
   if (['UNAUTHORIZED', 'AUTH_REQUIRED', 'KINJIRO_SESSION_EXPIRED'].includes(error?.code)) return 'キンジロー君の運転日報ボタンから開いてください。';
   if (error?.code === 'KINJIRO_VERIFICATION_UNAVAILABLE') return '本人確認の通信ができませんでした。入力を保持しています。少し待って再度お試しください。';
   if (error?.code === 'ROW_CONFLICT') return '記録の行が変更されているため保存を止めました。入力は保持されています。管理担当者に確認してください。';
+  if (error?.code === 'TRIP_CANCELLED') return 'この運転記録は管理担当者によって取り消されています。車両を選び直して、最新のメーターを確認してください。';
   if (error?.code === 'SCHEMA_ERROR') return '車両台帳の内容を確認できません。入力は保持されています。管理担当者に確認してください。';
   return error?.message || '通信できませんでした。入力を保持しています。電波状況をご確認ください。';
 }
@@ -486,6 +487,9 @@ async function submitStart(retry = false) {
     toast(isDemo ? 'プレビュー：出発画面を切り替えました' : '出発を記録しました');
   } catch (error) {
     if (DEFINITIVE_ERRORS.has(error?.code)) { state.pendingStart = null; writeStore('pending-start', null); }
+    if (error?.code === 'TRIP_CANCELLED') {
+      state.trip = null; state.context = null; state.phase = 'select'; writeStore('active-trip', null); ++contextGeneration; renderVehicle();
+    }
     showError(error);
     if (error?.code === 'VEHICLE_IN_USE') {
       try {
@@ -555,6 +559,9 @@ async function submitFinish(retry = false) {
       try { const result = await api.getTrip(state.trip.id); if (result.trip?.status === 'completed') { completeTrip(result.trip); $('completed-title').textContent = 'この運転は完了済みです'; toast('保存済みの内容を表示しました。'); return; } } catch { /* Keep the original error visible. */ }
     }
     if (DEFINITIVE_ERRORS.has(error?.code)) { state.pendingFinish = null; writeStore('pending-finish', null); }
+    if (error?.code === 'TRIP_CANCELLED') {
+      state.trip = null; state.context = null; state.phase = 'select'; writeStore('active-trip', null); ++contextGeneration; renderVehicle();
+    }
     showError(error);
   } finally { state.busy = false; renderControls(); }
 }
@@ -671,7 +678,7 @@ async function initialize() {
         if (result.trip?.id) state.trip = result.trip;
         else throw new Error('運転中の記録を確認できませんでした。');
       } catch (error) {
-        if (error?.code === 'TRIP_NOT_FOUND') { writeStore('active-trip', null); state.pendingFinish = null; writeStore('pending-finish', null); }
+        if (['TRIP_NOT_FOUND', 'TRIP_CANCELLED'].includes(error?.code)) { writeStore('active-trip', null); state.pendingFinish = null; writeStore('pending-finish', null); }
         else { state.phase = 'error'; throw error; }
       }
     }
