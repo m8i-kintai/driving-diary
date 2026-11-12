@@ -12,13 +12,19 @@ const own = (o, key, fallback) => Object.hasOwn(o, key) ? o[key] : fallback;
 const plain = value => JSON.parse(JSON.stringify(value));
 
 function fixture(options = {}) {
-  const env = { sheets: [], readSheetNames: [], fail: null, writes: [], lockCalls: 0, now: Date.parse('2026-11-12T00:05:00Z'), verifyCount: 0, verifyStatus: 'ok', requestCount: 0 };
+  const env = { sheets: [], readSheetNames: [], fail: null, writes: [], lockCalls: 0, now: Date.parse('2026-11-12T00:05:00Z'), verifyCount: 0, verifyStatus: 'ok', requestCount: 0, typedSheets: !!options.typedSheets, sheetTimeZone: options.sheetTimeZone || 'Asia/Tokyo' };
   class Range {
     constructor(sheet, r, c, rows = 1, cols = 1) { Object.assign(this, { sheet, r, c, rows, cols }); }
     raw(r, c) { return this.sheet.data[r - 1]?.[c - 1] ?? ''; }
     getValues() {
       return Array.from({ length: this.rows }, (_, i) => Array.from({ length: this.cols }, (_, j) => {
-        const value = this.raw(this.r + i, this.c + j);
+        let value = this.raw(this.r + i, this.c + j);
+        if (env.typedSheets && this.sheet.id === 21 && this.r + i > 1 && typeof value === 'string') {
+          const header = HEADERS[this.c + j - 1];
+          const offset = env.sheetTimeZone === 'Etc/UTC' ? 'Z' : '+09:00';
+          if (header === '日付' && /^\d{4}-\d{2}-\d{2}$/.test(value)) value = new Date(`${value}T00:00:00${offset}`);
+          if (['出発時間', '終了時間'].includes(header) && /^\d{2}:\d{2}$/.test(value)) value = new Date(`1899-12-30T${value}:00${offset}`);
+        }
         if (typeof value === 'string' && value.startsWith('=HYPERLINK(')) return '運転日リンク';
         return typeof value === 'string' ? value.replace(/^'(?=[=+\-@])/, '') : value;
       }));
@@ -44,6 +50,7 @@ function fixture(options = {}) {
     constructor(name, id, data = []) { Object.assign(this, { name, id, data: data.map(r => [...r]), hidden: false, formats: new Map() }); env.sheets.push(this); }
     getName() { return this.name; }
     getSheetId() { return this.id; }
+    getParent() { return env.ss; }
     getRange(...args) { return new Range(this, ...args); }
     getLastRow() { for (let i = this.data.length - 1; i >= 0; i--) if (this.data[i]?.some(v => v !== '' && v != null)) return i + 1; return 0; }
     getLastColumn() { return Math.max(0, ...this.data.map(r => r.reduce((last, v, i) => v !== '' && v != null ? i + 1 : last, 0))); }
@@ -56,6 +63,7 @@ function fixture(options = {}) {
   new Sheet('運転日報ひな形', 3, [HEADERS]);
   env.ss = {
     getId: () => 'test-workbook',
+    getSpreadsheetTimeZone: () => env.sheetTimeZone,
     getSheetByName: name => { env.readSheetNames.push(name); return env.sheets.find(s => s.name === name) ?? null; },
     getSheets: () => env.sheets,
     insertSheet: name => new Sheet(name, env.sheets.length + 100)
@@ -70,7 +78,17 @@ function fixture(options = {}) {
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => env.props[key] ?? null }) },
     SpreadsheetApp: { openById: id => { assert.equal(id, 'test-workbook'); return env.ss; }, flush: () => {} },
     LockService: { getScriptLock: () => { env.lockCalls++; return { waitLock: () => { if (env.busy) throw new Error('locked'); }, releaseLock: () => {} }; } },
-    Utilities: { getUuid: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, '0')}`, DigestAlgorithm: { SHA_256: 'sha256' }, computeDigest: (_, value) => [...createHash('sha256').update(value).digest()] },
+    Utilities: {
+      getUuid: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, '0')}`,
+      DigestAlgorithm: { SHA_256: 'sha256' }, computeDigest: (_, value) => [...createHash('sha256').update(value).digest()],
+      formatDate: (date, timeZone, format) => {
+        const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(date).filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
+        if (format === 'yyyy-MM-dd') return `${parts.year}-${parts.month}-${parts.day}`;
+        if (format === 'HH:mm') return `${parts.hour}:${parts.minute}`;
+        if (format === 'HH:mm:ss.SSS') return `${parts.hour}:${parts.minute}:${parts.second}.${String(date.getUTCMilliseconds()).padStart(3, '0')}`;
+        throw new Error(`Unsupported test date format ${format}`);
+      }
+    },
     CacheService: { getScriptCache: () => ({ get: key => cache.get(key), put: (key, value, ttl) => { env.cacheTtl = ttl; cache.set(key, value); } }) },
     UrlFetchApp: { fetch: (url, params) => { env.verifyCount++; env.verifyRequest = { url, params }; if (env.verifyThrow) throw new Error('offline'); const id = JSON.parse(params.payload).empId; return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ status: env.verifyStatus, code: env.verifyCode, empId: own(env, 'verifyEmployee', id), empName: own(env, 'verifyName', id === '0002' ? '佐藤 花子' : '山田 太郎') }) }; } },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: text => ({ text, setMimeType() { return this; } }) },
@@ -615,4 +633,77 @@ test('finish refuses a moved or manually completed start row before journaling',
   completed.vehicle.data[1][HEADERS.indexOf('終了時間')] = '12:00';
   assert.equal(completed.finish(active.id).error.code, 'ROW_CONFLICT');
   assert.equal(completed.cell('終了時間'), '12:00');
+});
+
+test('typed Sheets dates and times complete the original row after a three-kilometer trip', () => {
+  const f = fixture({ typedSheets: true, initial: 85712 });
+  f.now = Date.parse('2026-11-12T04:07:00Z');
+  const started = f.start();
+  assert.equal(started.ok, true);
+  assert.equal(f.cell('日付').toISOString(), '2026-11-11T15:00:00.000Z');
+  assert.equal(f.cell('出発時間').toISOString(), '1899-12-30T04:07:00.000Z');
+  assert.equal(f.cell('終了時間'), '');
+  const completed = f.finish(started.data.trip.id, { endOdometer: 85715 });
+  assert.equal(completed.ok, true, JSON.stringify(completed));
+  assert.equal(completed.data.rowNumber, 2);
+  assert.equal(completed.data.trip.distance, 3);
+  assert.equal(f.vehicle.getLastRow(), 2);
+  assert.equal(f.cell('終了メーター(km)'), 85715);
+});
+
+test('typed Sheets pending completion recovers without another row or a false conflict', () => {
+  const f = fixture({ typedSheets: true }); const trip = f.start().data.trip;
+  f.fail = { sheet: '社用車一覧', row: 2, col: 1, after: true };
+  assert.equal(f.finish(trip.id, {}, { requestId: 'typed-pending-finish' }).error.code, 'INTERNAL_ERROR');
+  const recovered = f.finish(trip.id, {}, { requestId: 'typed-pending-finish' });
+  assert.equal(recovered.ok, true, JSON.stringify(recovered));
+  assert.equal(f.vehicle.getLastRow(), 2);
+  assert.equal(f.call('getTrip', { tripId: trip.id }).data.trip.status, 'completed');
+});
+
+test('typed Sheets recovery accepts historical journal Date values serialized to ISO', () => {
+  const f = fixture({ typedSheets: true });
+  f.fail = { sheet: '_運転日報_記録管理', row: 2, col: 1 };
+  assert.equal(f.start({}, { requestId: 'typed-serialized-start' }).error.code, 'INTERNAL_ERROR');
+  const requests = f.ss.getSheetByName('_運転日報_リクエスト');
+  const operation = JSON.parse(requests.data[1][4]);
+  operation.fields.date = f.cell('日付').toISOString();
+  operation.fields.startTime = f.cell('出発時間').toISOString();
+  requests.data[1][4] = JSON.stringify(operation);
+  const recovered = f.call('vehicleContext', { vehicleId: 'テスト410え8' });
+  assert.equal(recovered.ok, true, JSON.stringify(recovered));
+  assert.equal(recovered.data.activeTrip.status, 'active');
+  assert.equal(f.vehicle.data[1][HEADERS.indexOf('日付')], '2026-11-12');
+  assert.equal(f.vehicle.data[1][HEADERS.indexOf('出発時間')], '09:05');
+  assert.equal(f.finish(recovered.data.activeTrip.id).ok, true);
+});
+
+test('typed Sheets uses spreadsheet timezone and keeps a blank end time distinct from midnight', () => {
+  const f = fixture({ typedSheets: true, sheetTimeZone: 'Etc/UTC' });
+  f.now = Date.parse('2026-11-11T15:00:00Z');
+  const trip = f.start().data.trip;
+  assert.equal(f.cell('出発時間').toISOString(), '1899-12-30T00:00:00.000Z');
+  assert.equal(f.cell('終了時間'), '');
+  f.now += 30 * 60000;
+  const completed = f.finish(trip.id);
+  assert.equal(completed.ok, true, JSON.stringify(completed));
+  assert.equal(f.vehicle.data[1][HEADERS.indexOf('出発時間')], '00:00');
+  assert.equal(f.vehicle.data[1][HEADERS.indexOf('終了時間')], '00:30');
+});
+
+test('typed Sheets still rejects a genuinely edited start time', () => {
+  const f = fixture({ typedSheets: true }); const trip = f.start().data.trip;
+  f.vehicle.data[1][HEADERS.indexOf('出発時間')] = '09:06';
+  assert.equal(f.finish(trip.id).error.code, 'ROW_CONFLICT');
+  assert.equal(f.cell('終了メーター(km)'), '');
+});
+
+test('typed Sheets does not discard manually changed seconds or a changed calendar day', () => {
+  const seconds = fixture({ typedSheets: true }); const first = seconds.start().data.trip;
+  seconds.vehicle.data[1][HEADERS.indexOf('出発時間')] = new Date('1899-12-30T00:05:30+00:00');
+  assert.equal(seconds.finish(first.id).error.code, 'ROW_CONFLICT');
+  const day = fixture({ typedSheets: true }); const second = day.start().data.trip;
+  day.vehicle.data[1][HEADERS.indexOf('日付')] = '2026-11-13';
+  assert.equal(day.finish(second.id).error.code, 'ROW_CONFLICT');
+  assert.equal(day.cell('終了メーター(km)'), '');
 });

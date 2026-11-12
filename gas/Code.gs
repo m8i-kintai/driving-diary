@@ -296,14 +296,17 @@ function applyOperation_(ss, store, operation) {
   var sheet = sheetById_(ss, trip.sheetId);
   if (!sheet) fail_('SCHEMA_ERROR', '記録先シートが見つかりません。管理者に確認してください。');
   var table = table_(sheet, TRIP_SCHEMA_);
+  var timeZone = sheetTimeZone_(sheet);
   var current = rowFields_(sheet, table, trip.rowNumber);
-  Object.keys(operation.fields).forEach(function (key) {
-    if (!sameCell_(current[key], operation.fields[key]) && !sameCell_(current[key], operation.previousFields[key])) {
+  var desired = canonicalTripFields_(operation.fields, timeZone);
+  var previous = canonicalTripFields_(operation.previousFields, timeZone);
+  Object.keys(desired).forEach(function (key) {
+    if (!sameCell_(current[key], desired[key]) && !sameCell_(current[key], previous[key])) {
       fail_('ROW_CONFLICT', '記録行が変更されています。管理者に確認してください。');
     }
   });
   // Only the 19 known fields are touched; unrelated extra columns are preserved.
-  var columns = Object.keys(operation.fields).map(function (key) { return { column: table.map[key] + 1, value: operation.fields[key] }; })
+  var columns = Object.keys(desired).map(function (key) { return { column: table.map[key] + 1, value: desired[key] }; })
     .sort(function (a, b) { return a.column - b.column; });
   var run = [];
   function flushRun() {
@@ -337,6 +340,7 @@ function vehicleContext_(ss, store, id) {
 function vehicleState_(ss, vehicle, store) {
   var sheet = resolveVehicleSheet_(ss, vehicle);
   var table = table_(sheet, TRIP_SCHEMA_);
+  var timeZone = sheetTimeZone_(sheet);
   var latest = null, latestOilRecord = null;
   function consider(stamp, end, oil) {
     if (!isFinite(stamp)) fail_('SCHEMA_ERROR', '既存の完了記録の日時を確認してください。');
@@ -358,10 +362,10 @@ function vehicleState_(ss, vehicle, store) {
       var row = rows[i];
       if (blank_(row[table.map.endTime]) || blank_(row[table.map.endOdometer])) continue;
       var end = numeric_(row[table.map.endOdometer], '既存の終了メーター', false);
-      var day = dateValue_(row[table.map.date]);
+      var day = canonicalTripField_('date', row[table.map.date], timeZone);
       if (!day) fail_('SCHEMA_ERROR', '既存の完了記録に日付がありません。');
-      var startClock = clockMilliseconds_(row[table.map.startTime]);
-      var endClock = clockMilliseconds_(row[table.map.endTime]);
+      var startClock = clockMilliseconds_(canonicalTripField_('startTime', row[table.map.startTime], timeZone));
+      var endClock = clockMilliseconds_(canonicalTripField_('endTime', row[table.map.endTime], timeZone));
       var stamp = Date.parse(day + 'T00:00:00+09:00') + endClock;
       if (endClock < startClock) stamp += 86400000;
       consider(stamp, end, /^(実施|済|交換|○|〇|true|1)$/i.test(String(row[table.map.oil]).trim()));
@@ -376,11 +380,11 @@ function clockMilliseconds_(value) {
     return ((date.getUTCHours() * 60 + date.getUTCMinutes()) * 60 + date.getUTCSeconds()) * 1000;
   }
   if (typeof value === 'number' && isFinite(value) && value >= 0 && value < 1) return Math.round(value * 86400000);
-  var match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(value == null ? '' : value).normalize('NFKC').trim());
+  var match = /^(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(String(value == null ? '' : value).normalize('NFKC').trim());
   if (!match || Number(match[1]) > 23 || Number(match[2]) > 59 || Number(match[3] || 0) > 59) {
     fail_('SCHEMA_ERROR', '既存の完了記録の出発・終了時刻を確認してください。');
   }
-  return ((Number(match[1]) * 60 + Number(match[2])) * 60 + Number(match[3] || 0)) * 1000;
+  return ((Number(match[1]) * 60 + Number(match[2])) * 60 + Number(match[3] || 0)) * 1000 + Number((match[4] || '').padEnd(3, '0'));
 }
 
 function loadVehicles_(ss) {
@@ -600,8 +604,41 @@ function alcohol_(value) {
 function rowFields_(sheet, table, row) {
   var values = sheet.getRange(row, 1, 1, table.width).getValues()[0], result = {};
   Object.keys(TRIP_SCHEMA_).forEach(function (key) { result[key] = values[table.map[key]] == null ? '' : values[table.map[key]]; });
+  return canonicalTripFields_(result, sheetTimeZone_(sheet));
+}
+
+// Sheets may return calendar/time cells as Date objects even when the app wrote
+// strings. Normalize only these three known fields, including old journal ISO
+// strings, so comparisons and recovery use the same spreadsheet-local values.
+function canonicalTripFields_(fields, timeZone) {
+  var result = {};
+  Object.keys(fields).forEach(function (key) { result[key] = canonicalTripField_(key, fields[key], timeZone); });
   return result;
 }
+
+function canonicalTripField_(key, value, timeZone) {
+  if (key !== 'date' && key !== 'startTime' && key !== 'endTime') return value;
+  if (blank_(value)) return '';
+  var date = Object.prototype.toString.call(value) === '[object Date]' ? value : null;
+  if (!date && typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value)) date = new Date(value);
+  if (date) {
+    if (isNaN(date.getTime())) fail_('SCHEMA_ERROR', '記録の日付・時刻を確認してください。');
+    if (key === 'date') return Utilities.formatDate(date, timeZone, 'yyyy-MM-dd');
+    return Utilities.formatDate(date, timeZone, 'HH:mm:ss.SSS').replace(/\.000$/, '').replace(/:00$/, '');
+  }
+  if (key === 'date') return dateValue_(value);
+  var milliseconds = clockMilliseconds_(value);
+  var hours = Math.floor(milliseconds / 3600000) % 24;
+  var minutes = Math.floor(milliseconds / 60000) % 60;
+  var seconds = Math.floor(milliseconds / 1000) % 60;
+  var fraction = milliseconds % 1000;
+  var text = ('0' + hours).slice(-2) + ':' + ('0' + minutes).slice(-2);
+  if (seconds || fraction) text += ':' + ('0' + seconds).slice(-2);
+  if (fraction) text += '.' + ('00' + fraction).slice(-3);
+  return text;
+}
+
+function sheetTimeZone_(sheet) { return sheet.getParent().getSpreadsheetTimeZone(); }
 function blankTripFields_() { var result = {}; Object.keys(TRIP_SCHEMA_).forEach(function (key) { result[key] = ''; }); return result; }
 function sameCell_(a, b) {
   function key(v) { return String(v == null ? '' : v).replace(/^'(?=[=+\-@])/, ''); }
