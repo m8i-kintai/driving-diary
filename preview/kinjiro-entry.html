@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>キンジロウ 運転日報入口プレビュー</title>
+<style>
+  * { box-sizing: border-box; }
+  :root {
+    --bg:#0f0f13; --surface:#18181f; --surface2:#22222c;
+    --border:rgba(255,255,255,.08); --text:#f0efe8; --muted:#8a8a99;
+    --accent:#5b6ef5; --accent2:#7b8ef7; --purple:#9f7af0;
+    --accent-glow:rgba(91,110,245,.25); --green:#3dba7a; --red:#e05a5a; --radius:16px;
+  }
+  body.light {
+    --bg:#f2f3f6; --surface:#fff; --surface2:#e9ebf0;
+    --border:rgba(0,0,0,.10); --text:#1e2130; --muted:#5f6577;
+    --accent-glow:rgba(91,110,245,.16);
+  }
+  body {
+    margin:0; min-height:100dvh; padding:24px 18px 48px;
+    color:var(--text); background:radial-gradient(ellipse at top left,rgba(91,110,245,.08),transparent 55%),var(--bg);
+    font-family:"Noto Sans JP",system-ui,-apple-system,"Yu Gothic",sans-serif;
+  }
+  .preview-shell { width:100%; max-width:420px; margin:0 auto; display:flex; flex-direction:column; gap:22px; }
+  .preview-header { display:flex; align-items:center; justify-content:space-between; gap:14px; }
+  .preview-header h1 { font-size:18px; margin:0; }
+  .preview-label { color:var(--muted); font-size:11px; margin:5px 0 0; }
+  .preview-themes { display:flex; gap:6px; }
+  .preview-theme { border:1px solid var(--border); border-radius:8px; padding:7px 9px; color:var(--muted); background:var(--surface2); font:inherit; font-size:11px; cursor:pointer; }
+  .preview-theme[aria-pressed="true"] { color:var(--accent2); border-color:var(--accent); }
+  .preview-clock { position:relative; overflow:hidden; padding:24px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); text-align:center; }
+  .preview-clock::before { content:""; position:absolute; top:0; left:0; right:0; height:2px; background:linear-gradient(90deg,var(--accent),var(--purple)); }
+  .preview-date { color:var(--muted); font-size:13px; }
+  .preview-time { margin-top:9px; font-family:"DM Mono",ui-monospace,monospace; font-size:42px; font-weight:500; letter-spacing:-1px; }
+  .preview-punches { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .preview-punch { padding:20px; border-radius:var(--radius); background:rgba(61,186,122,.12); border:1px solid rgba(61,186,122,.3); color:var(--green); text-align:center; }
+  .preview-punch.out { color:var(--red); background:rgba(224,90,90,.07); border-color:rgba(224,90,90,.18); }
+  .preview-punch strong { display:block; font-size:19px; }
+  .preview-punch span { display:block; font-size:11px; opacity:.8; margin-top:5px; }
+  .work-card { display:flex; flex-direction:column; gap:16px; padding:18px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); }
+  .section-label { color:var(--muted); font-size:13px; font-weight:700; }
+  .work-field { display:flex; flex-direction:column; gap:7px; }
+  .field-label { color:var(--muted); font-size:12px; }
+  .work-input { width:100%; padding:12px; border:1px solid var(--border); border-radius:10px; background:var(--surface2); color:var(--text); font:inherit; font-size:13px; }
+  textarea.work-input { min-height:72px; resize:vertical; }
+  .preview-remote { display:flex; align-items:center; justify-content:space-between; font-size:13px; }
+  .preview-remote input { accent-color:var(--accent); width:18px; height:18px; }
+  .preview-note { color:var(--muted); font-size:11px; line-height:1.7; margin:0; }
+  /* drive-diary-css:start */
+  .drive-diary-entry {
+    display: flex; align-items: center; gap: 16px; width: 100%;
+    min-height: 102px; padding: 20px; text-align: left; text-decoration: none;
+    font: inherit; color: var(--text); cursor: pointer;
+    background: linear-gradient(135deg, rgba(91,110,245,0.16), rgba(159,122,240,0.07) 62%, rgba(61,186,122,0.06)), var(--surface);
+    border: 1px solid rgba(123,142,247,0.36); border-radius: var(--radius);
+    box-shadow: 0 8px 28px rgba(0,0,0,0.12);
+    transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .drive-diary-entry:hover {
+    border-color: var(--accent2);
+    box-shadow: 0 10px 30px var(--accent-glow);
+    transform: translateY(-1px);
+  }
+  .drive-diary-entry:active { transform: translateY(0); }
+  .drive-diary-entry:focus-visible { outline: 3px solid var(--accent2); outline-offset: 4px; }
+  .drive-diary-icon {
+    display: grid; place-items: center; flex: 0 0 52px; width: 52px; height: 52px;
+    border-radius: 15px; color: var(--accent2); background: rgba(91,110,245,0.15);
+    border: 1px solid rgba(123,142,247,0.22);
+  }
+  .drive-diary-icon svg { width: 31px; height: 31px; }
+  .drive-diary-copy { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .drive-diary-title { font-size: 17px; font-weight: 700; line-height: 1.4; }
+  .drive-diary-description { font-size: 12px; font-weight: 400; line-height: 1.6; color: var(--muted); }
+  .drive-diary-arrow { flex: 0 0 22px; width: 22px; height: 22px; margin-left: auto; color: var(--accent2); }
+  body.light .drive-diary-entry {
+    background: linear-gradient(135deg, rgba(91,110,245,0.09), rgba(159,122,240,0.04) 62%, rgba(61,186,122,0.04)), var(--surface);
+    border-color: rgba(91,110,245,0.28); box-shadow: 0 6px 20px rgba(30,33,48,0.06);
+  }
+  body.light .drive-diary-icon { color: var(--accent); background: rgba(91,110,245,0.1); }
+  @media (prefers-reduced-motion: reduce) {
+    .drive-diary-entry { transition: none; }
+    .drive-diary-entry:hover { transform: none; }
+  }
+  /* drive-diary-css:end */
+</style>
+</head>
+<body>
+<main class="preview-shell">
+  <header class="preview-header">
+    <div><h1>キンジロー君</h1><p class="preview-label">運転日報の入口・表示プレビュー</p></div>
+    <div class="preview-themes" aria-label="表示テーマ">
+      <button class="preview-theme" type="button" data-theme="dark" aria-pressed="true">ダーク</button>
+      <button class="preview-theme" type="button" data-theme="light" aria-pressed="false">ライト</button>
+    </div>
+  </header>
+  <section class="preview-clock" aria-label="時計の表示例">
+    <div class="preview-date">2026年11月12日</div><div class="preview-time">07:45:00</div>
+  </section>
+  <div class="preview-punches" aria-label="既存の打刻欄の表示例">
+    <div class="preview-punch"><strong>▶ 出勤</strong><span>タップして打刻</span></div>
+    <div class="preview-punch out"><strong>■ 退勤</strong><span>タップして打刻</span></div>
+  </div>
+  <section class="work-card" aria-label="稼働情報の表示例">
+    <div class="section-label">稼働情報（必須）</div>
+    <label class="preview-remote">遠地<input type="checkbox" aria-label="遠地"></label>
+    <label class="work-field"><span class="field-label">稼働部門</span>
+      <select class="work-input" id="work-dept"><option>建設1G</option><option selected>建設2G</option><option>建設3G</option></select>
+    </label>
+    <label class="work-field"><span class="field-label">実施内容</span>
+      <textarea class="work-input" placeholder="例：顧客訪問、社内会議、現場作業など"></textarea>
+    </label>
+  </section>
+  <!-- drive-diary-entry:start -->
+  <a class="drive-diary-entry" href="../?demo=1" target="_blank" rel="noopener noreferrer" aria-label="運転日報を開く" aria-describedby="drive-diary-description">
+    <span class="drive-diary-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+        <path d="m5 10 1.5-4A2 2 0 0 1 8.4 4.7h7.2A2 2 0 0 1 17.5 6L19 10"/>
+        <rect x="3" y="10" width="18" height="8" rx="2.5"/>
+        <path d="M5 18v2m14-2v2M7 14h.01M17 14h.01M10 15h4"/>
+      </svg>
+    </span>
+    <span class="drive-diary-copy">
+      <span class="drive-diary-title">運転日報</span>
+      <span class="drive-diary-description" id="drive-diary-description">車両点検・出発・帰着の記録</span>
+    </span>
+    <svg class="drive-diary-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+  </a>
+  <!-- drive-diary-entry:end -->
+
+  <p class="preview-note">入口の見え方を確認するプレビューです。ボタンから、架空データを使う運転日報のデモが開きます。</p>
+</main>
+<script>
+  document.querySelectorAll('[data-theme]').forEach(function(button) {
+    button.addEventListener('click',function() {
+      var light = button.dataset.theme === 'light';
+      document.body.classList.toggle('light',light);
+      document.querySelectorAll('[data-theme]').forEach(function(item) {
+        item.setAttribute('aria-pressed',String(item === button));
+      });
+    });
+  });
+</script>
+</body>
+</html>
+

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101016">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="運転日報">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' https://script.google.com https://script.googleusercontent.com https://*.googleusercontent.com; frame-src https://script.google.com https://script.googleusercontent.com https://*.googleusercontent.com; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self' https://script.google.com https://script.googleusercontent.com https://*.googleusercontent.com">
+  <title>運転日報</title>
+  <link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./config.js"></script>
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">入力画面へ</a>
+  <div class="app-shell">
+    <div id="demo-banner" class="demo-banner" hidden>プレビュー・記録は保存されません</div>
+    <header class="app-header">
+      <div><p class="eyebrow">DRIVE LOG</p><h1>運転日報</h1><p id="today" class="header-date">—</p></div>
+      <button id="history-button" class="history-button" type="button" disabled><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 11a9 9 0 1 1 2 6M3 4v7h7m2-5v6l4 2"/></svg><span>履歴</span></button>
+    </header>
+    <main id="main" tabindex="-1">
+      <div id="offline-banner" class="notice notice-amber" role="status" hidden>オフラインです。入力は端末に保持されます。記録の保存には通信が必要です。</div>
+      <section id="boot-status" class="empty-state" aria-live="polite"><span class="loading-orbit" aria-hidden="true"></span><h2 id="boot-title">車両情報を読み込んでいます</h2><p id="boot-message">しばらくお待ちください。</p><button id="boot-retry" class="secondary-button" type="button" hidden>もう一度読み込む</button></section>
+      <div id="global-error" class="notice notice-error" role="alert" hidden></div>
+      <section id="pending-notice" class="notice notice-amber" aria-live="polite" hidden><strong>保存結果を確認できていません</strong><p>入力内容は保持されています。同じ内容で再確認できます。</p><button id="pending-retry" class="secondary-button" type="button">同じ内容で再確認</button></section>
+
+      <form id="start-form" class="screen-stack" novalidate hidden>
+        <fieldset id="start-fields" class="form-fields">
+          <div class="field"><label for="department">稼働部門 <span class="required-mark">必須</span></label><div class="select-wrap"><select id="department" name="department" required><option value="">選択してください</option></select></div></div>
+          <div class="field"><label for="vehicle">車両ナンバー <span class="required-mark">必須</span></label><div class="select-wrap"><select id="vehicle" name="vehicleId" required><option value="">車両を選択してください</option></select></div></div>
+          <div class="field"><label for="employee">運転者 <span class="required-mark">社員番号</span></label><div class="employee-input"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 4V2h6v2m-9 0h12a2 2 0 0 1 2 2v14H4V6a2 2 0 0 1 2-2Z"/><circle cx="9" cy="10" r="2"/><path d="M6 16c0-3 6-3 6 0m2-7h3m-3 4h3m-3 4h3"/></svg><input id="employee" name="employeeId" type="text" inputmode="numeric" autocomplete="off" maxlength="20" placeholder="社員番号を入力" aria-describedby="employee-status"></div><p id="employee-status" class="field-help" aria-live="polite">社員番号から氏名を確認します。</p></div>
+        </fieldset>
+
+        <section id="start-vehicle-card" class="card vehicle-card accent-card" aria-labelledby="start-model"><div class="card-heading"><h2 id="start-model">今日の車両</h2><span class="status-pill">出発前</span></div><div class="vehicle-stage"><img id="start-vehicle-image" class="vehicle-image" alt="" hidden><div id="vehicle-placeholder" class="vehicle-placeholder"><svg aria-hidden="true" viewBox="0 0 80 48"><path d="M7 34V18c0-5 3-8 8-8h33l20 12v12M3 34h72v6H3zM18 10l-2 14h47M43 11v13"/><circle cx="20" cy="38" r="6"/><circle cx="60" cy="38" r="6"/></svg><span>車両を選択してください</span></div></div><div class="meter-row"><label for="start-odometer">出発時メーター</label><div class="meter-display"><input id="start-odometer" type="text" readonly aria-describedby="meter-help" value="—"><span>km</span></div></div><p id="meter-help" class="field-help">前回の終了メーターを自動で表示します。</p><div id="oil-status" class="oil-status" hidden></div></section>
+        <div id="active-vehicle-notice" class="notice notice-amber" hidden><strong>この車両には運転中の記録があります</strong><p id="active-vehicle-description"></p><button id="open-active-trip" class="secondary-button" type="button">運転中の記録を開く</button></div>
+
+        <fieldset id="inspection-fields" class="card inspection-card" aria-labelledby="inspection-title"><div class="card-heading"><h2 id="inspection-title">車両点検</h2><span id="inspection-count" class="count-pill">0 / 9</span></div><p class="section-help">各項目を点検して、タップで確認</p><div id="inspection-grid" class="inspection-grid"></div></fieldset>
+        <fieldset id="before-alcohol" class="card alcohol-card" aria-labelledby="before-alcohol-title"><div class="card-heading"><h2 id="before-alcohol-title">アルコールチェック</h2><span class="tag-purple">運転前</span></div><div class="alcohol-columns"><div class="field"><label for="before-reading">測定値 <span class="optional">任意</span></label><div class="unit-input alcohol-reading"><input id="before-reading" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00"><span>mg/L</span></div></div><fieldset class="presence-field"><legend>酒気帯び</legend><div class="radio-pair"><label><input type="radio" name="before-presence" value="無" checked><span>無</span></label><label><input type="radio" name="before-presence" value="有"><span>有</span></label></div></fieldset></div><label class="check-row confirmation-row"><input id="before-confirmed" type="checkbox"><span class="check-box" aria-hidden="true"></span><span>運転前対面確認者</span><span class="optional">任意</span></label></fieldset>
+        <div class="action-area"><p id="start-guidance" class="action-guidance" aria-live="polite">車両と運転者を選択してください。</p><div id="start-slider" class="slide-control is-disabled"><div class="slide-fill"></div><span class="slide-label">スライドして出発</span><span class="slide-chevrons" aria-hidden="true">›››</span><button class="slide-thumb" type="button" role="slider" aria-label="出発を記録" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-disabled="true"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 12h16m-7-7 7 7-7 7"/></svg></button></div><p class="slide-hint">右へスライド</p><button id="start-alternative" class="action-alternative" type="button" disabled>スライド操作が難しい場合はこちら</button></div>
+      </form>
+
+      <form id="finish-form" class="screen-stack" novalidate hidden>
+        <div class="screen-title"><h2>運転完了の記録</h2><span class="tag-purple">運転後</span></div>
+        <div class="department-summary"><span>稼働部門</span><strong id="trip-department">—</strong></div>
+        <section class="card vehicle-summary accent-card"><img id="trip-vehicle-image" alt=""><div><h2 id="trip-model">—</h2><p class="summary-label">車両ナンバー</p><p id="trip-number" class="summary-number">—</p><p id="trip-driver" class="field-help">—</p><p id="trip-started" class="field-help">—</p></div></section>
+        <fieldset id="finish-fields" class="form-fields screen-stack">
+          <section class="card"><h2>運転記録</h2><div class="finish-field"><label for="destination">行き先 <span class="required-mark">必須</span></label><input id="destination" type="text" maxlength="200" placeholder="例：名古屋市内の現場" autocomplete="off"></div><div class="finish-field"><label for="end-odometer">終了後メーター</label><div class="unit-input"><input id="end-odometer" type="number" min="0" step="1" inputmode="numeric" placeholder="終了時のメーター"><span>km</span></div></div><div class="distance-line"><span>出発時 <strong id="trip-start-meter">—</strong> km</span><span>走行距離 <strong id="trip-distance">—</strong> km</span></div><p id="end-meter-error" class="field-help error-text" aria-live="polite"></p></section>
+          <section class="card"><h2>給油・整備</h2><div class="fuel-box"><label class="check-row"><input id="refueled" type="checkbox"><span class="check-box" aria-hidden="true"></span><span>給油した</span></label><div id="fuel-liters-field" class="fuel-liters" hidden><label for="fuel-liters">給油量</label><div class="unit-input"><input id="fuel-liters" type="number" min="0" step="0.1" inputmode="decimal" placeholder="例：25.0"><span>L</span></div></div></div><label class="check-row"><input id="oil-changed" type="checkbox"><span class="check-box" aria-hidden="true"></span><span>オイル交換した</span></label></section>
+          <section class="card"><h2><label for="notes">備考・不具合の報告</label></h2><textarea id="notes" rows="3" maxlength="4000" placeholder="不具合や報告事項があれば入力"></textarea></section>
+          <fieldset class="card alcohol-card" aria-labelledby="after-alcohol-title"><div class="card-heading"><h2 id="after-alcohol-title">アルコールチェック</h2><span class="tag-purple">運転後</span></div><div class="alcohol-columns"><div class="field"><label for="after-reading">測定値 <span class="optional">任意</span></label><div class="unit-input alcohol-reading"><input id="after-reading" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00"><span>mg/L</span></div></div><fieldset class="presence-field"><legend>酒気帯び</legend><div class="radio-pair"><label><input type="radio" name="after-presence" value="無" checked><span>無</span></label><label><input type="radio" name="after-presence" value="有"><span>有</span></label></div></fieldset></div><label class="check-row confirmation-row"><input id="after-confirmed" type="checkbox"><span class="check-box" aria-hidden="true"></span><span>運転後対面確認者</span><span class="optional">任意</span></label></fieldset>
+        </fieldset>
+        <div class="action-area"><p id="finish-guidance" class="action-guidance" aria-live="polite">行き先と終了後メーターを入力してください。</p><div id="finish-slider" class="slide-control is-disabled"><div class="slide-fill"></div><span class="slide-label">スライドして完了</span><span class="slide-chevrons" aria-hidden="true">›››</span><button class="slide-thumb" type="button" role="slider" aria-label="運転完了を記録" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-disabled="true"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 12h16m-7-7 7 7-7 7"/></svg></button></div><p class="slide-hint">右へスライド</p><button id="finish-alternative" class="action-alternative" type="button" disabled>スライド操作が難しい場合はこちら</button></div>
+      </form>
+
+      <section id="completed-screen" class="completed-screen" hidden aria-labelledby="completed-title"><div class="success-icon" aria-hidden="true">✓</div><p class="eyebrow">DRIVE COMPLETED</p><h2 id="completed-title" tabindex="-1">運転を記録しました</h2><p class="completed-message">おつかれさまでした。</p><div class="card completed-card"><p id="completed-number"></p><strong class="completed-distance"><span id="completed-distance">—</span><small>km</small></strong><p id="completed-time" class="field-help"></p><p id="completed-destination" class="field-help"></p><a id="completed-sheet" class="text-link" target="_blank" rel="noopener noreferrer" hidden>日報を開く ↗</a></div><button id="next-drive" class="primary-button" type="button">次の運転へ</button></section>
+    </main>
+    <footer class="app-footer"><span class="footer-dot" aria-hidden="true"></span> 今日も安全運転で。</footer>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="warnings-dialog" class="app-dialog"><div class="dialog-heading"><h2>車両のお知らせ</h2><button class="icon-button" type="button" data-close-dialog aria-label="閉じる">×</button></div><div id="warnings-content" class="dialog-content"></div><button class="primary-button" type="button" data-close-dialog>確認しました</button></dialog>
+  <dialog id="history-dialog" class="app-dialog"><div class="dialog-heading"><h2>運転履歴</h2><button class="icon-button" type="button" data-close-dialog aria-label="閉じる">×</button></div><p id="history-vehicle" class="field-help"></p><div id="history-content" class="dialog-content" aria-live="polite"></div></dialog>
+  <dialog id="confirm-dialog" class="app-dialog"><h2 id="confirm-title">記録しますか？</h2><p id="confirm-message" class="dialog-copy"></p><div class="dialog-actions"><button id="confirm-cancel" class="secondary-button" type="button">戻る</button><button id="confirm-submit" class="primary-button" type="button">記録する</button></div></dialog>
+</body>
+</html>

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+release/
+design/
+.local-preview/
+.env*
+*.local.json
+config.local.js
+.clasp.json
+.clasprc.json
+coverage/
+*.log
+

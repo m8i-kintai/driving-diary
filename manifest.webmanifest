@@ -1,0 +1,12 @@
+{
+  "id": "./",
+  "name": "運転日報",
+  "short_name": "運転日報",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#101016",
+  "theme_color": "#101016",
+  "icons": [{ "src": "./assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
