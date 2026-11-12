@@ -118,12 +118,13 @@ function saveDraft() {
   writeStore('draft', { start: startPayload(), finish: state.trip ? finishPayload() : previous?.finish || null, inspectionBasis });
 }
 function restoreStart(draft) {
-  if (!draft) return;
-  if (state.departments.includes(draft.department)) $('department').value = draft.department;
-  const sameVehicle = state.favorites.includes(String(draft.vehicleId));
-  $('vehicle').value = sameVehicle ? String(draft.vehicleId) : '';
-  CHECKS.forEach(([key]) => { $(`check-${key}`).checked = sameVehicle && draft.checks?.[key] === true; });
-  setAlcohol('before', sameVehicle ? draft.before : {});
+  if (state.departments.includes(draft?.department)) $('department').value = draft.department;
+  resetVehicleSelection();
+}
+function resetVehicleSelection() {
+  $('vehicle').value = ''; state.context = null;
+  CHECKS.forEach(([key]) => { $(`check-${key}`).checked = false; });
+  setAlcohol('before');
 }
 function restoreFinish(draft) {
   if (!draft || String(draft.tripId) !== String(state.trip?.id)) {
@@ -315,6 +316,7 @@ async function continueSelection() {
 function returnToSelection() {
   if (state.busy || state.pendingStart || state.pendingFinish) return;
   saveDraft(); ++contextGeneration; state.contextLoading = false; state.phase = 'select'; state.trip = null; state.context = null; state.sheetUrl = null;
+  resetVehicleSelection();
   renderVehicle(); renderControls(); window.scrollTo({ top: 0, behavior: 'instant' }); $('selection-title').focus({ preventScroll: true });
 }
 function finishIssue() {
@@ -475,6 +477,7 @@ async function submitStart(retry = false) {
   clearError();
   try { if (!state.pendingStart) state.pendingStart = newRequest(startPayload(), 'pending-start'); }
   catch (error) { showError(error); return; }
+  const requestedVehicleId = String(state.pendingStart.payload.vehicleId);
   saveDraft(); state.busy = true; renderControls();
   try {
     const result = await api.startTrip(state.pendingStart.payload, state.pendingStart.requestId);
@@ -488,20 +491,22 @@ async function submitStart(retry = false) {
   } catch (error) {
     if (DEFINITIVE_ERRORS.has(error?.code)) { state.pendingStart = null; writeStore('pending-start', null); }
     if (error?.code === 'TRIP_CANCELLED') {
-      state.trip = null; state.context = null; state.phase = 'select'; writeStore('active-trip', null); ++contextGeneration; renderVehicle();
+      state.trip = null; state.phase = 'select'; resetVehicleSelection(); writeStore('active-trip', null); ++contextGeneration; renderVehicle();
     }
     showError(error);
     if (error?.code === 'VEHICLE_IN_USE') {
       try {
         const generation = ++contextGeneration;
-        const vehicleId = $('vehicle').value;
+        const selectedVehicleId = $('vehicle').value;
+        const vehicleId = requestedVehicleId;
         state.contextLoading = false;
         const context = await api.vehicleContext(vehicleId);
-        if (generation !== contextGeneration || $('vehicle').value !== vehicleId) return;
+        if (generation !== contextGeneration || $('vehicle').value !== selectedVehicleId) return;
         const route = resolveJourney(context, vehicleId);
         applyVehicleContext(context);
         if (route.phase === 'active') { enterTrip(route.trip); toast('この車両は出発済みのため、完了画面へ切り替えました。'); }
-        else showDeparture();
+        else if (selectedVehicleId === vehicleId) showDeparture();
+        else { state.phase = 'select'; resetVehicleSelection(); renderVehicle(); }
       } catch (refreshError) { showError(refreshError); }
     }
   } finally { state.busy = false; renderControls(); }
@@ -560,7 +565,7 @@ async function submitFinish(retry = false) {
     }
     if (DEFINITIVE_ERRORS.has(error?.code)) { state.pendingFinish = null; writeStore('pending-finish', null); }
     if (error?.code === 'TRIP_CANCELLED') {
-      state.trip = null; state.context = null; state.phase = 'select'; writeStore('active-trip', null); ++contextGeneration; renderVehicle();
+      state.trip = null; state.phase = 'select'; resetVehicleSelection(); writeStore('active-trip', null); ++contextGeneration; renderVehicle();
     }
     showError(error);
   } finally { state.busy = false; renderControls(); }
@@ -597,8 +602,7 @@ async function openActiveTrip() {
 }
 async function nextDrive() {
   ++contextGeneration; state.contextLoading = false; state.phase = 'select'; state.trip = null; state.context = null; state.sheetUrl = null; clearError();
-  CHECKS.forEach(([key]) => { $(`check-${key}`).checked = false; });
-  setAlcohol('before'); restoreFinish(null); writeStore('draft', { start: startPayload(), finish: null }); renderControls();
+  resetVehicleSelection(); restoreFinish(null); writeStore('draft', { start: startPayload(), finish: null }); renderControls();
   renderVehicle();
   $('department').focus({ preventScroll: true }); window.scrollTo({ top: 0, behavior: 'instant' });
 }
@@ -664,7 +668,7 @@ async function initialize() {
     $('department').replaceChildren(new Option('選択してください', ''));
     state.departments.forEach(department => { const value = typeof department === 'string' ? department : department.name || department.id; $('department').add(new Option(value, value)); });
     state.departments = state.departments.map(department => typeof department === 'string' ? department : department.name || department.id);
-    renderVehicleOptions();
+    renderVehicleOptions('');
     const draft = readStore('draft');
     restoreStart(state.pendingStart?.payload || draft?.start);
     const launch = api.launchContext || {};
@@ -726,6 +730,11 @@ document.querySelectorAll('[data-close-dialog]').forEach(button => button.addEve
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog) { const bounds = dialog.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close(); } }));
 window.addEventListener('online', () => { renderControls(); if (state.phase === 'start') loadVehicle(); toast('通信が戻りました'); });
 window.addEventListener('offline', renderControls);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) setDate(); });
+function resetSelectionOnReturn() {
+  if (document.hidden || state.phase !== 'select' || state.busy) return;
+  ++contextGeneration; state.contextLoading = false; resetVehicleSelection(); renderVehicle(); renderControls();
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { setDate(); resetSelectionOnReturn(); } });
+window.addEventListener('pageshow', event => { if (event.persisted) resetSelectionOnReturn(); });
 if ('serviceWorker' in navigator && !isDemo) window.addEventListener('load', () => { navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => { /* The app remains usable without installation. */ }); });
 initialize();
