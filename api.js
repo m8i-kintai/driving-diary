@@ -41,7 +41,7 @@ function readLaunch(env, apiUrl) {
     token: params.get('kinjiroToken') || stored.token || '',
     accessKey: params.get('invite') || params.get('accessKey') || stored.accessKey || ''
   };
-  if (context.employeeId.length > 64 || context.token.length > 4096 || context.accessKey.length > 4096) throw apiError('UNAUTHORIZED', 'キンジロウの運転日報ボタンから開き直してください。');
+  if (context.employeeId.length > 64 || context.token.length > 4096 || context.accessKey.length > 4096) throw apiError('UNAUTHORIZED', 'キンジロー君の運転日報ボタンから開き直してください。');
   try { env.sessionStorage?.setItem(storageKey, JSON.stringify(context)); } catch { /* use this tab's memory */ }
   if (params.has('kinjiroToken') || params.has('invite') || params.has('accessKey')) {
     for (const key of ['kinjiroToken', 'invite', 'accessKey']) params.delete(key);
@@ -112,7 +112,7 @@ export function createApi({ config = {}, env = globalThis, auth } = {}) {
   const launch = auth || readLaunch(env, config.apiUrl || '');
   const call = async (action, payload = {}, id = requestId(env.crypto)) => {
     const url = validateApiUrl(config.apiUrl);
-    if (!launch.accessKey && !(launch.employeeId && launch.token)) throw apiError('UNAUTHORIZED', 'キンジロウの運転日報ボタン、または社内の配布リンクから開いてください。');
+    if (!(launch.employeeId && launch.token)) throw apiError('UNAUTHORIZED', 'キンジロー君の運転日報ボタンから開き直してください。');
     if (env.navigator?.onLine === false) throw apiError('NETWORK_ERROR', '通信できる場所で、同じ内容を再確認してください。');
     const envelope = { version: 1, action, requestId: id, payload };
     if (launch.accessKey) envelope.accessKey = launch.accessKey;
@@ -128,8 +128,13 @@ export function createApi({ config = {}, env = globalThis, auth } = {}) {
   };
   return {
     launchContext: Object.freeze({ employeeId: launch.employeeId || '', department: launch.department || '' }),
-    bootstrap: () => call('bootstrap'),
-    lookupEmployee: employeeId => call('lookupEmployee', { employeeId }),
+    bootstrap: async () => {
+      const data = await call('bootstrap');
+      if (typeof data?.employee?.id !== 'string' || !data.employee.id.trim() || typeof data.employee.name !== 'string' || !data.employee.name.trim()) {
+        throw apiError('INVALID_RESPONSE', '運転者情報を確認できません。キンジロー君から開き直してください。');
+      }
+      return data;
+    },
     vehicleContext: vehicleId => call('vehicleContext', { vehicleId }),
     startTrip: (payload, id) => call('startTrip', payload, id),
     finishTrip: (payload, id) => call('finishTrip', payload, id),

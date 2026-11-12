@@ -12,7 +12,7 @@ const own = (o, key, fallback) => Object.hasOwn(o, key) ? o[key] : fallback;
 const plain = value => JSON.parse(JSON.stringify(value));
 
 function fixture(options = {}) {
-  const env = { sheets: [], fail: null, writes: [], lockCalls: 0, now: Date.parse('2026-11-12T00:05:00Z'), verifyCount: 0, verifyStatus: 'ok', requestCount: 0 };
+  const env = { sheets: [], readSheetNames: [], fail: null, writes: [], lockCalls: 0, now: Date.parse('2026-11-12T00:05:00Z'), verifyCount: 0, verifyStatus: 'ok', requestCount: 0 };
   class Range {
     constructor(sheet, r, c, rows = 1, cols = 1) { Object.assign(this, { sheet, r, c, rows, cols }); }
     raw(r, c) { return this.sheet.data[r - 1]?.[c - 1] ?? ''; }
@@ -52,16 +52,17 @@ function fixture(options = {}) {
   }
   const master = new Sheet('社用車一覧', 1, [MASTER, [own(options, 'current', ''), 'ハイエース', '2027-02-12', 'テスト410え　8', '=HYPERLINK("https://docs.google.com/spreadsheets/d/test/edit#gid=21","運転日リンク")', own(options, 'initial', 120000), own(options, 'fuel', '軽油'), own(options, 'oil', 116000), options.mt ? 'MT' : 'AT']]);
   const vehicle = new Sheet('the gid is authoritative', 21, [HEADERS]);
-  new Sheet('社員一覧', 2, [['氏名', '社員番号'], ['山田 太郎', '0001'], ['佐藤 花子', '0002']]);
+  if (options.employeeSheet) new Sheet('社員一覧', 2, [['氏名', '社員番号'], ['日報側に残った別の氏名', '0001']]);
   new Sheet('運転日報ひな形', 3, [HEADERS]);
   env.ss = {
     getId: () => 'test-workbook',
-    getSheetByName: name => env.sheets.find(s => s.name === name) ?? null,
+    getSheetByName: name => { env.readSheetNames.push(name); return env.sheets.find(s => s.name === name) ?? null; },
     getSheets: () => env.sheets,
     insertSheet: name => new Sheet(name, env.sheets.length + 100)
   };
   env.props = { SPREADSHEET_ID: 'test-workbook', ACCESS_KEY, ALLOWED_ORIGINS: '["https://example.github.io"]', KINJIRO_VERIFY_URL: 'https://verification.example.invalid/exec' };
   const cache = new Map();
+  env.authCache = cache;
   let uuid = 0;
   class FixedDate extends Date { static now() { return env.now; } }
   env.context = vm.createContext({
@@ -70,36 +71,41 @@ function fixture(options = {}) {
     SpreadsheetApp: { openById: id => { assert.equal(id, 'test-workbook'); return env.ss; }, flush: () => {} },
     LockService: { getScriptLock: () => { env.lockCalls++; return { waitLock: () => { if (env.busy) throw new Error('locked'); }, releaseLock: () => {} }; } },
     Utilities: { getUuid: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, '0')}`, DigestAlgorithm: { SHA_256: 'sha256' }, computeDigest: (_, value) => [...createHash('sha256').update(value).digest()] },
-    CacheService: { getScriptCache: () => ({ get: key => cache.get(key), put: (key, value) => cache.set(key, value) }) },
-    UrlFetchApp: { fetch: (url, params) => { env.verifyCount++; env.verifyRequest = { url, params }; if (env.verifyThrow) throw new Error('offline'); return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ status: env.verifyStatus, empId: own(env, 'verifyEmployee', JSON.parse(params.payload).empId) }) }; } },
+    CacheService: { getScriptCache: () => ({ get: key => cache.get(key), put: (key, value, ttl) => { env.cacheTtl = ttl; cache.set(key, value); } }) },
+    UrlFetchApp: { fetch: (url, params) => { env.verifyCount++; env.verifyRequest = { url, params }; if (env.verifyThrow) throw new Error('offline'); const id = JSON.parse(params.payload).empId; return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ status: env.verifyStatus, code: env.verifyCode, empId: own(env, 'verifyEmployee', id), empName: own(env, 'verifyName', id === '0002' ? '佐藤 花子' : '山田 太郎') }) }; } },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: text => ({ text, setMimeType() { return this; } }) },
     HtmlService: { XFrameOptionsMode: { ALLOWALL: 'allowall' }, createHtmlOutput: html => ({ html, setXFrameOptionsMode() { return this; } }) }
   });
   vm.runInContext(source, env.context, { filename: 'Code.gs' });
-  env.call = (action, payload = {}, opts = {}) => plain(env.context.processRequest_({ version: 1, action, payload, requestId: opts.requestId ?? `request-${++env.requestCount}`, accessKey: own(opts, 'accessKey', ACCESS_KEY), ...(opts.kinjiro ? { kinjiro: opts.kinjiro } : {}) }));
+  env.call = (action, payload = {}, opts = {}) => {
+    const kinjiro = own(opts, 'kinjiro', { employeeId: '0001', token: 'default-test-device-token' });
+    return plain(env.context.processRequest_({ version: 1, action, payload, requestId: opts.requestId ?? `request-${++env.requestCount}`, accessKey: own(opts, 'accessKey', ''), ...(kinjiro ? { kinjiro } : {}) }));
+  };
   env.master = master; env.vehicle = vehicle;
   env.cell = header => vehicle.getRange(2, HEADERS.indexOf(header) + 1).getValue();
-  env.start = (payload = {}, opts = {}) => env.call('startTrip', { vehicleId: 'テスト410え8', employeeId: '0001', department: '管理G', checks: Object.fromEntries(['brakes', 'tires', 'engine', 'battery', 'lights', 'washer', 'wipers', 'glass', 'body'].map(k => [k, true])), before: { confirmed: true, reading: null, presence: '無' }, ...payload }, opts);
+  env.start = (payload = {}, opts = {}) => env.call('startTrip', { vehicleId: 'テスト410え8', department: '管理G', checks: Object.fromEntries(['brakes', 'tires', 'engine', 'battery', 'lights', 'washer', 'wipers', 'glass', 'body'].map(k => [k, true])), before: { confirmed: true, reading: null, presence: '無' }, ...payload }, opts);
   env.finish = (tripId, payload = {}, opts = {}) => env.call('finishTrip', { tripId, destination: '取引先', endOdometer: 120120, refueled: false, fuelLiters: null, oilChanged: false, notes: '', after: { confirmed: true, reading: null, presence: '無' }, ...payload }, opts);
   return env;
 }
 
 test('auth protects reads; health contains no workbook or credentials', () => {
   const f = fixture();
-  for (const action of ['bootstrap', 'lookupEmployee', 'vehicleContext', 'getTrip', 'listHistory', 'startTrip', 'finishTrip']) assert.equal(f.call(action, {}, { accessKey: '' }).error.code, 'UNAUTHORIZED');
+  for (const action of ['bootstrap', 'lookupEmployee', 'vehicleContext', 'getTrip', 'listHistory', 'startTrip', 'finishTrip']) assert.equal(f.call(action, {}, { accessKey: '', kinjiro: null }).error.code, 'UNAUTHORIZED');
+  assert.equal(f.call('bootstrap', {}, { accessKey: ACCESS_KEY, kinjiro: null }).error.code, 'UNAUTHORIZED');
   const health = JSON.parse(f.context.doGet().text);
   assert.deepEqual(health, { ok: true, service: 'drive-log', version: 1 });
 });
 
-test('reordered master headers, normalized vehicle ID, and leading-zero employee IDs', () => {
+test('reordered master headers and normalized vehicle ID return the verified self profile', () => {
   const f = fixture();
   const data = f.call('bootstrap').data;
   assert.equal(data.vehicles[0].id, 'テスト410え8');
   assert.equal(data.vehicles[0].number, 'テスト410え 8');
   assert.equal(data.vehicles[0].modelKey, 'hiace');
   assert.equal(data.departments.length, 13);
+  assert.deepEqual(data.employee, { id: '0001', name: '山田 太郎' });
   assert.deepEqual(f.call('lookupEmployee', { employeeId: '０００１' }).data, { id: '0001', name: '山田 太郎' });
-  assert.equal(f.call('lookupEmployee', { employeeId: 'missing' }).error.code, 'EMPLOYEE_NOT_FOUND');
+  assert.equal(f.call('lookupEmployee', { employeeId: 'missing' }).error.code, 'EMPLOYEE_MISMATCH');
 });
 
 test('missing initial odometer blocks start even when current master distance exists; zero is valid', () => {
@@ -116,7 +122,7 @@ test('startup and employee lookup are read-only and do not wait for the mutation
   assert.equal(f.call('lookupEmployee', { employeeId: '0001' }).ok, true);
   assert.equal(f.lockCalls, 0);
   assert.equal(f.writes.length, 0);
-  assert.equal(f.sheets.length, 4);
+  assert.equal(f.sheets.length, 3);
   assert.equal(f.call('vehicleContext', { vehicleId: 'テスト410え8' }).error.code, 'BUSY');
 });
 
@@ -282,7 +288,7 @@ test('Kinjiro verifies the fixed endpoint, caches by token/employee and binds wr
   assert.equal(f.start({}, auth).ok, true);
 });
 
-test('idempotent replay may change valid auth mode but remains bound to the recorded employee', () => {
+test('idempotent replay may change valid tokens but remains bound to the recorded employee', () => {
   const f = fixture();
   const original = f.start({}, { requestId: 'auth-mode-replay' });
   const same = { requestId: 'auth-mode-replay', accessKey: '', kinjiro: { employeeId: '0001', token: 'test-only-token-one' } };
@@ -310,6 +316,58 @@ test('Kinjiro status ok requires an explicit nonempty string or finite integer e
   }
   const numeric = fixture(); numeric.verifyEmployee = 123;
   assert.equal(numeric.call('bootstrap', {}, { accessKey: '', kinjiro: { employeeId: '１２３', token: 'test-only-device-token' } }).ok, true);
+});
+
+test('driver name is trusted only from deviceVerify; the diary employee sheet is never read', () => {
+  const f = fixture({ employeeSheet: true });
+  f.verifyName = '  認証済み　運転者  ';
+  const launch = { kinjiro: { employeeId: '0001', token: 'verified-profile-token', name: 'URLから渡された偽氏名', empName: '別人' } };
+  assert.deepEqual(f.call('bootstrap', { employeeName: '偽氏名' }, launch).data.employee, { id: '0001', name: '  認証済み　運転者  ' });
+  f.sheets = f.sheets.filter(s => s.name !== '社員一覧');
+  const trip = f.start({ employeeName: 'クライアント指定の偽氏名', name: '別人' }, launch).data.trip;
+  assert.equal(trip.employeeId, '0001');
+  assert.equal(trip.employeeName, '  認証済み　運転者  ');
+  assert.equal(f.cell('運転者'), '  認証済み　運転者  ');
+  assert.equal(f.finish(trip.id, {}, launch).ok, true);
+  assert.equal(f.readSheetNames.includes('社員一覧'), false);
+});
+
+test('a missing or malformed verified name fails before spreadsheet access even with a valid invite key', () => {
+  for (const value of [undefined, null, '', '   ', {}, [], 123, '改行\n氏名']) {
+    const f = fixture(); f.verifyName = value;
+    const response = f.call('bootstrap', { employeeName: 'クライアントが補った氏名' }, { accessKey: ACCESS_KEY });
+    assert.equal(response.error.code, 'UNAUTHORIZED', `rejected name ${String(value)}`);
+    assert.equal(f.readSheetNames.length, 0);
+    assert.equal(f.authCache.size, 0);
+  }
+});
+
+test('the identity cache retains verified name and re-verifies incomplete or expired profile entries', () => {
+  const f = fixture(); f.verifyName = '確認時の氏名';
+  assert.equal(f.call('bootstrap').data.employee.name, '確認時の氏名');
+  f.verifyName = 'キンジロー君で更新された氏名';
+  assert.equal(f.call('bootstrap').data.employee.name, '確認時の氏名');
+  assert.equal(f.verifyCount, 1);
+  assert.equal(f.cacheTtl, 120);
+  const key = [...f.authCache.keys()][0];
+  assert.match(key, /^drive-auth:v3:[a-f0-9]+$/);
+  assert.doesNotMatch(f.authCache.get(key), /default-test-device-token/);
+  f.authCache.set(key, JSON.stringify({ version: 1, employeeId: '0001' }));
+  assert.equal(f.call('bootstrap').data.employee.name, 'キンジロー君で更新された氏名');
+  assert.equal(f.verifyCount, 2);
+  f.authCache.clear();
+  f.verifyStatus = 'error'; f.verifyCode = 'notfound';
+  assert.equal(f.call('bootstrap').error.code, 'KINJIRO_SESSION_EXPIRED');
+});
+
+test('a different authenticated employee cannot start for or finish another employee', () => {
+  const f = fixture();
+  assert.equal(f.start({ employeeId: '0002', employeeName: '佐藤 花子' }).error.code, 'EMPLOYEE_MISMATCH');
+  const trip = f.start().data.trip;
+  const other = { kinjiro: { employeeId: '0002', token: 'other-employee-token' } };
+  assert.equal(f.finish(trip.id, {}, other).error.code, 'EMPLOYEE_MISMATCH');
+  assert.equal(f.call('getTrip', { tripId: trip.id }).data.trip.status, 'active');
+  assert.equal(f.finish(trip.id).ok, true);
 });
 
 test('completed ledger timestamps keep latest distance and latest oil when visible rows are sorted', () => {
@@ -363,8 +421,8 @@ test('completed legacy rows without a known date fail instead of choosing the ph
 
 test('bridge posts only to an allowlisted origin and escapes script-closing input', () => {
   const f = fixture();
-  f.ss.getSheetByName('社員一覧').data[1][0] = '</script><script>unexpected()</script>';
-  const request = { version: 1, requestId: 'bridge-request', action: 'lookupEmployee', accessKey: ACCESS_KEY, payload: { employeeId: '0001' } };
+  f.verifyName = '</script><script>unexpected()</script>';
+  const request = { version: 1, requestId: 'bridge-request', action: 'lookupEmployee', kinjiro: { employeeId: '0001', token: 'test-only-device-token' }, payload: { employeeId: '0001' } };
   const allowed = f.context.doPost({ parameter: { transport: 'bridge', origin: 'https://example.github.io', nonce: 'nonce-123456', payload: JSON.stringify(request) } });
   assert.match(allowed.html, /window\.top\.postMessage/);
   assert.match(allowed.html, /DRIVE_LOG_RPC/);

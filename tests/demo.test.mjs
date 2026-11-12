@@ -12,7 +12,7 @@ function setup() {
 }
 async function startPayload(api, overrides = {}) {
   const { vehicles, departments } = await api.bootstrap();
-  return { vehicleId: vehicles[0].id, employeeId: '1001', department: departments[0], checks: Object.fromEntries(CHECKS.map(key => [key, true])), before: { confirmed: false, reading: null, presence: '無' }, ...overrides };
+  return { vehicleId: vehicles[0].id, department: departments[0], checks: Object.fromEntries(CHECKS.map(key => [key, true])), before: { confirmed: false, reading: null, presence: '無' }, ...overrides };
 }
 function finishPayload(trip, overrides = {}) {
   return { tripId: trip.id, destination: 'プレビューの現場', endOdometer: trip.startOdometer + 60, refueled: false, fuelLiters: null, oilChanged: false, notes: '', after: { confirmed: false, reading: null, presence: '無' }, ...overrides };
@@ -32,6 +32,28 @@ test('preview exposes 48 fictitious vehicles, all five models and an unregistere
   assert.ok(unregistered);
   assert.equal((await api.vehicleContext(unregistered.id)).startOdometer, null);
   await assert.rejects(api.startTrip(await startPayload(api, { vehicleId: unregistered.id }), 'unregistered-start'), { code: 'INITIAL_ODOMETER_REQUIRED' });
+});
+
+test('preview bootstraps its authenticated employee and records that identity without a lookup', async () => {
+  const { api } = setup();
+  const result = await api.bootstrap();
+  assert.deepEqual(result.employee, { id: '1001', name: 'デモ運転者' });
+  assert.equal(api.launchContext.employeeId, '1001');
+  assert.equal(api.lookupEmployee, undefined);
+  result.employee.name = 'outside mutation';
+  assert.equal((await api.bootstrap()).employee.name, 'デモ運転者');
+  const { trip } = await api.startTrip(await startPayload(api, { employeeName: '任意の氏名' }), 'identity-start');
+  assert.equal(trip.employeeId, '1001');
+  assert.equal(trip.employeeName, 'デモ運転者');
+});
+
+test('a different employee ID cannot replace the authenticated preview driver', async () => {
+  const { api } = setup();
+  const payload = await startPayload(api, { employeeId: '2002' });
+  await assert.rejects(api.startTrip(payload, 'identity-mismatch'), { code: 'EMPLOYEE_MISMATCH' });
+  assert.equal((await api.listHistory(payload.vehicleId)).trips.length, 0);
+  const { trip } = await api.startTrip({ ...payload, employeeId: '1001' }, 'identity-match');
+  assert.equal(trip.employeeName, 'デモ運転者');
 });
 
 test('optional alcohol measurements preserve the difference between null and zero', async () => {

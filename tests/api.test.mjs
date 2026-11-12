@@ -4,7 +4,7 @@ import { createApi, isTrustedGasOrigin, validateApiUrl } from '../api.js';
 
 // Every request in these tests goes to this in-memory fetch stub, never Google.
 const TEST_URL = 'https://script.google.com/macros/s/TEST_ONLY_NO_NETWORK/exec';
-const auth = { accessKey: 'test-only-invite' };
+const auth = { employeeId: '1001', token: 'test-only-device-token' };
 function storage() {
   const values = new Map();
   return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), values };
@@ -23,7 +23,8 @@ function environment(overrides = {}) {
     async fetch(url, options) {
       const envelope = JSON.parse(options.body);
       calls.push({ url, options, envelope });
-      return { ok: true, async json() { return { ok: true, requestId: envelope.requestId, data: { action: envelope.action } }; } };
+      const data = envelope.action === 'bootstrap' ? { employee: { id: '1001', name: '認証済み運転者' }, action: envelope.action } : { action: envelope.action };
+      return { ok: true, async json() { return { ok: true, requestId: envelope.requestId, data }; } };
     },
     ...overrides,
   };
@@ -93,9 +94,29 @@ test('missing configuration, missing credentials and offline state fail before f
   const { env, calls } = environment();
   await assert.rejects(createApi({ env, auth, config: {} }).bootstrap(), { code: 'UNCONFIGURED' });
   await assert.rejects(createApi({ env, auth: {}, config: { apiUrl: TEST_URL } }).bootstrap(), { code: 'UNAUTHORIZED' });
+  await assert.rejects(createApi({ env, auth: { accessKey: 'test-only-invite' }, config: { apiUrl: TEST_URL } }).bootstrap(), { code: 'UNAUTHORIZED' });
+  await assert.rejects(createApi({ env, auth: { employeeId: '1001' }, config: { apiUrl: TEST_URL } }).bootstrap(), { code: 'UNAUTHORIZED' });
   env.navigator.onLine = false;
   await assert.rejects(client(env).bootstrap(), { code: 'NETWORK_ERROR' });
   assert.equal(calls.length, 0);
+});
+
+test('bootstrap returns the server-verified employee without a separate employee lookup', async () => {
+  const { env, calls } = environment();
+  const api = client(env);
+  const data = await api.bootstrap();
+  assert.deepEqual(data.employee, { id: '1001', name: '認証済み運転者' });
+  assert.equal(api.lookupEmployee, undefined);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].envelope.action, 'bootstrap');
+  assert.deepEqual(calls[0].envelope.kinjiro, { employeeId: '1001', token: 'test-only-device-token' });
+});
+
+test('bootstrap refuses an absent or incomplete authenticated employee', async () => {
+  for (const employee of [undefined, null, {}, { id: '1001' }, { id: '', name: '名前' }, { id: '1001', name: '  ' }, { id: 1001, name: '名前' }]) {
+    const { env } = environment({ fetch: async (_url, options) => ({ ok: true, json: async () => ({ ok: true, requestId: JSON.parse(options.body).requestId, data: { employee } }) }) });
+    await assert.rejects(client(env).bootstrap(), { code: 'INVALID_RESPONSE', ambiguous: true });
+  }
 });
 
 test('launch credentials stay in sessionStorage and are scrubbed from the URL fragment', async () => {

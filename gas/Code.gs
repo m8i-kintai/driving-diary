@@ -2,15 +2,15 @@
  * 運転日報 API / Apps Script V8.
  * Script Properties (never put their real values in this source):
  *   SPREADSHEET_ID: driving-log workbook ID
- *   ACCESS_KEY: random, long standalone invitation secret (URL fragment only)
+ *   ACCESS_KEY: legacy invitation property; alone it cannot establish driver identity
  *   ALLOWED_ORIGINS: JSON array of exact frontend origins, e.g. ["https://example.github.io"]
- *   KINJIRO_VERIFY_URL: optional, fixed server-side deviceVerify endpoint
+ *   KINJIRO_VERIFY_URL: required, fixed server-side deviceVerify endpoint
  * Deploy as a web app executing as the owner. doGet exposes health only.
  * setup_ is a private, manually run initializer; do not run it against production as a preview.
  */
 var DRIVE_LOG_ = Object.freeze({
   version: 1,
-  master: '社用車一覧', employees: '社員一覧', template: '運転日報ひな形',
+  master: '社用車一覧', template: '運転日報ひな形',
   trips: '_運転日報_記録管理', requests: '_運転日報_リクエスト',
   departments: ['ネットワーク1G', 'ネットワーク2G', '管理G', '技術G', '建設1G', '建設2G', '建設3G', '通信事業部', '保全G', '横浜営業所', '埼玉営業所', '大阪営業所', '広島営業所'],
   checks: ['brakes', 'tires', 'engine', 'battery', 'lights', 'washer', 'wipers', 'glass', 'body'],
@@ -73,12 +73,12 @@ function processRequest_(request) {
     validateEnvelope_(request);
     var auth = authenticate_(request);
     var payload = request.payload || {};
-    // Startup and employee lookup need no trip state and never initialize helpers.
+    // Startup and the legacy self-profile action never initialize helpers.
     if (request.action === 'bootstrap' || request.action === 'lookupEmployee') {
-      var readSpreadsheet = spreadsheet_();
       var readData = request.action === 'bootstrap' ? {
-        departments: DRIVE_LOG_.departments.slice(), vehicles: loadVehicles_(readSpreadsheet).map(publicVehicle_), serverTime: nowJst_()
-      } : lookupEmployee_(readSpreadsheet, payload.employeeId);
+        departments: DRIVE_LOG_.departments.slice(), vehicles: loadVehicles_(spreadsheet_()).map(publicVehicle_),
+        serverTime: nowJst_(), employee: authenticatedEmployee_(auth)
+      } : authenticatedEmployee_(auth, payload.employeeId);
       return { ok: true, data: readData, requestId: request.requestId };
     }
     var lock = LockService.getScriptLock();
@@ -129,19 +129,26 @@ function validateEnvelope_(r) {
 
 function authenticate_(r) {
   var props = PropertiesService.getScriptProperties();
-  var configured = props.getProperty('ACCESS_KEY') || '';
-  if (configured && typeof r.accessKey === 'string' && constantEqual_(configured, r.accessKey)) return { employeeId: null };
-  if (!r.kinjiro || typeof r.kinjiro !== 'object') fail_('UNAUTHORIZED', '配布URLまたはキンジロウから開き直してください。');
+  // A shared invitation key cannot prove a person's name. Identity always comes
+  // from the fixed Kinjiro verifier, never from URL names or request payloads.
+  if (!r.kinjiro || typeof r.kinjiro !== 'object') fail_('UNAUTHORIZED', 'キンジロー君の運転日報ボタンから開き直してください。');
   var employeeId = normalizeId_(r.kinjiro.employeeId);
   var token = r.kinjiro.token;
   if (!employeeId || typeof token !== 'string' || token.length < 8 || token.length > 4096) {
-    fail_('UNAUTHORIZED', 'キンジロウの認証情報を確認できません。');
+    fail_('UNAUTHORIZED', 'キンジロー君の認証情報を確認できません。');
   }
   var verifyUrl = props.getProperty('KINJIRO_VERIFY_URL') || '';
-  if (!/^https:\/\//.test(verifyUrl)) fail_('CONFIGURATION_ERROR', 'キンジロウ認証の接続先が未設定です。');
+  if (!/^https:\/\//.test(verifyUrl)) fail_('CONFIGURATION_ERROR', 'キンジロー君認証の接続先が未設定です。');
   var cache = typeof CacheService !== 'undefined' ? CacheService.getScriptCache() : null;
-  var cacheKey = 'drive-auth:v2:' + sha256_(employeeId + '\n' + token);
-  if (cache && cache.get(cacheKey) === employeeId) return { employeeId: employeeId };
+  var cacheKey = 'drive-auth:v3:' + sha256_(verifyUrl + '\n' + employeeId + '\n' + token);
+  if (cache) {
+    try {
+      var cached = JSON.parse(cache.get(cacheKey) || 'null');
+      if (cached && cached.version === 1 && cached.employeeId === employeeId && validEmployeeName_(cached.employeeName)) {
+        return { employeeId: cached.employeeId, employeeName: cached.employeeName };
+      }
+    } catch (_) { /* A missing/old/invalid profile must be verified again. */ }
+  }
   var verified;
   try {
     var result = UrlFetchApp.fetch(verifyUrl, {
@@ -150,28 +157,30 @@ function authenticate_(r) {
     });
     if (result.getResponseCode() < 200 || result.getResponseCode() >= 300) throw new Error('verify-http');
     verified = JSON.parse(result.getContentText());
-  } catch (_) { fail_('KINJIRO_VERIFICATION_UNAVAILABLE', 'キンジロウの確認に接続できません。少し待って再度お試しください。'); }
-  if (!verified || verified.status === 'invalid' || verified.status === 'notfound') {
-    fail_('KINJIRO_SESSION_EXPIRED', 'キンジロウで認証を更新してから開き直してください。');
+  } catch (_) { fail_('KINJIRO_VERIFICATION_UNAVAILABLE', 'キンジロー君の確認に接続できません。少し待って再度お試しください。'); }
+  if (!verified || verified.status === 'invalid' || verified.status === 'notfound' ||
+      verified.status === 'error' && ['invalid', 'notfound'].indexOf(verified.code) >= 0) {
+    fail_('KINJIRO_SESSION_EXPIRED', 'キンジロー君で認証を更新してから開き直してください。');
   }
-  if (verified.status !== 'ok') fail_('KINJIRO_VERIFICATION_UNAVAILABLE', 'キンジロウの確認結果を取得できません。');
+  if (verified.status !== 'ok') fail_('KINJIRO_VERIFICATION_UNAVAILABLE', 'キンジロー君の確認結果を取得できません。');
   var returnedId = verified.empId;
   if (!(typeof returnedId === 'string' || typeof returnedId === 'number' && isFinite(returnedId) && Math.floor(returnedId) === returnedId) ||
       !normalizeId_(returnedId) || normalizeId_(returnedId) !== employeeId) {
-    fail_('UNAUTHORIZED', 'キンジロウの社員番号を確認できません。');
+    fail_('UNAUTHORIZED', 'キンジロー君の社員番号を確認できません。');
   }
-  if (cache) cache.put(cacheKey, employeeId, 120);
-  return { employeeId: employeeId };
+  if (!validEmployeeName_(verified.empName)) fail_('UNAUTHORIZED', 'キンジロー君で本人の氏名を確認できません。管理者に確認してください。');
+  var identity = { employeeId: employeeId, employeeName: verified.empName };
+  if (cache) cache.put(cacheKey, JSON.stringify({ version: 1, employeeId: identity.employeeId, employeeName: identity.employeeName }), 120);
+  return identity;
 }
 
 function startTrip_(ss, store, request, auth, fingerprint) {
   var p = request.payload || {};
+  var employee = authenticatedEmployee_(auth, p.employeeId);
   var vehicle = requireVehicle_(ss, p.vehicleId);
   if (activeTrip_(store, vehicle.id)) fail_('VEHICLE_IN_USE', 'この車両は運転中です。先の運転を終了してください。');
   var state = vehicleState_(ss, vehicle, store);
   if (state.latestEnd === null && vehicle.initialOdometer === null) fail_('INITIAL_ODOMETER_REQUIRED', 'この車両の初回確認時の距離を管理者が登録してから開始してください。');
-  var employee = lookupEmployee_(ss, p.employeeId);
-  assertSubject_(auth, employee.id);
   if (DRIVE_LOG_.departments.indexOf(p.department) < 0) fail_('VALIDATION_ERROR', '稼働部門を選択してください。');
   var required = DRIVE_LOG_.checks.concat(vehicle.requiresClutch ? ['clutch'] : []);
   if (!p.checks || required.some(function (key) { return p.checks[key] !== true; })) fail_('VALIDATION_ERROR', 'すべての対象点検を確認してください。');
@@ -407,26 +416,19 @@ function requireVehicle_(ss, id) {
 function resolveVehicleSheet_(ss, vehicle) {
   var sheet = vehicle.sheetId === null ? null : sheetById_(ss, vehicle.sheetId);
   if (!sheet) sheet = ss.getSheets().filter(function (s) { return normalizeId_(s.getName()) === vehicle.id; })[0];
-  if (!sheet || [DRIVE_LOG_.master, DRIVE_LOG_.employees, DRIVE_LOG_.template, DRIVE_LOG_.trips, DRIVE_LOG_.requests].indexOf(sheet.getName()) >= 0) {
+  if (!sheet || [DRIVE_LOG_.master, DRIVE_LOG_.template, DRIVE_LOG_.trips, DRIVE_LOG_.requests].indexOf(sheet.getName()) >= 0) {
     fail_('SCHEMA_ERROR', '車両の運転日誌リンクを管理者が確認してください。');
   }
   return sheet;
 }
 
-function lookupEmployee_(ss, input) {
-  var id = normalizeId_(input);
-  if (!id || id.length > 32) fail_('VALIDATION_ERROR', '社員番号を入力してください。');
-  var sheet = ss.getSheetByName(DRIVE_LOG_.employees);
-  if (!sheet) fail_('SCHEMA_ERROR', '社員一覧シートが見つかりません。');
-  var table = table_(sheet, { id: ['社員番号'], name: ['氏名', '社員氏名'] });
-  var count = sheet.getLastRow() - table.headerRow;
-  var range = count > 0 ? sheet.getRange(table.headerRow + 1, 1, count, table.width) : null;
-  var rows = range ? (typeof range.getDisplayValues === 'function' ? range.getDisplayValues() : range.getValues()) : [];
-  var matches = rows.filter(function (r) { return normalizeId_(r[table.map.id]) === id; });
-  if (matches.length > 1) fail_('SCHEMA_ERROR', '社員番号が重複しています。管理者に確認してください。');
-  if (!matches.length || blank_(matches[0][table.map.name])) fail_('EMPLOYEE_NOT_FOUND', '該当する社員番号が見つかりません。');
-  return { id: id, name: String(matches[0][table.map.name]).trim() };
+function authenticatedEmployee_(auth, requestedId) {
+  if (!auth || !auth.employeeId || !validEmployeeName_(auth.employeeName)) fail_('UNAUTHORIZED', 'キンジロー君で本人情報を確認してください。');
+  if (!blank_(requestedId)) assertSubject_(auth, requestedId);
+  return { id: auth.employeeId, name: auth.employeeName };
 }
+
+function validEmployeeName_(value) { return typeof value === 'string' && value.trim() !== '' && value.length <= 200 && !/[\u0000-\u001F\u007F]/.test(value); }
 
 function table_(sheet, schema) {
   var width = Math.max(sheet.getLastColumn(), 1);
@@ -591,12 +593,11 @@ function sheetById_(ss, id) { return ss.getSheets().filter(function (s) { return
 function sheetUrl_(ss, gid) { return 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/edit#gid=' + gid; }
 function safeCellText_(text) { return /^[=+\-@]/.test(text) ? "'" + text : text; }
 function text_(v, label, max, required) { if (typeof v !== 'string' || v.length > max || required && !v.trim()) fail_('VALIDATION_ERROR', label + 'を確認してください。'); return v.trim(); }
-function assertSubject_(auth, employeeId) { if (auth.employeeId && auth.employeeId !== normalizeId_(employeeId)) fail_('EMPLOYEE_MISMATCH', 'キンジロウの社員番号と運転者が一致しません。'); }
+function assertSubject_(auth, employeeId) { if (!auth.employeeId || auth.employeeId !== normalizeId_(employeeId)) fail_('EMPLOYEE_MISMATCH', 'キンジロー君の社員番号と運転者が一致しません。'); }
 function fail_(code, message) { var e = new Error(message); e.driveLogCode = code; throw e; }
 function errorResponse_(err, id) { return { ok: false, error: { code: err && err.driveLogCode || 'INTERNAL_ERROR', message: err && err.driveLogCode ? err.message : '処理を完了できませんでした。同じ操作をもう一度お試しください。' }, requestId: typeof id === 'string' ? id : null }; }
 function jsonOutput_(value) { return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON); }
 function safeScriptJson_(value) { return JSON.stringify(value).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'); }
-function constantEqual_(a, b) { var mismatch = a.length ^ b.length; for (var i = 0; i < Math.max(a.length, b.length); i++) mismatch |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0); return mismatch === 0; }
 function stableJson_(v) { if (Array.isArray(v)) return '[' + v.map(stableJson_).join(',') + ']'; if (v && typeof v === 'object') return '{' + Object.keys(v).sort().map(function (k) { return JSON.stringify(k) + ':' + stableJson_(v[k]); }).join(',') + '}'; return JSON.stringify(v); }
 function sha256_(value) { return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, value).map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join(''); }
 
@@ -615,7 +616,7 @@ function allowedOrigin_(origin) {
 
 function setup_() {
   var props = PropertiesService.getScriptProperties();
-  if (!(props.getProperty('ACCESS_KEY') || props.getProperty('KINJIRO_VERIFY_URL'))) fail_('CONFIGURATION_ERROR', '認証設定を先に登録してください。');
+  if (!props.getProperty('KINJIRO_VERIFY_URL')) fail_('CONFIGURATION_ERROR', 'キンジロー君認証設定を先に登録してください。');
   var ss = spreadsheet_();
   loadVehicles_(ss); // validate existing headings without changing the master
   store_(ss);

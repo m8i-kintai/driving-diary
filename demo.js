@@ -1,6 +1,7 @@
 const DEPARTMENTS = ['ネットワーク1G','ネットワーク2G','管理G','技術G','建設1G','建設2G','建設3G','通信事業部','保全G','横浜営業所','埼玉営業所','大阪営業所','広島営業所'];
 const MODELS = [['hiace','ハイエース'],['hijet','ハイゼット'],['succeed','サクシード'],['probox','プロボックス'],['toyoace','トヨエース']];
 const CHECKS = ['brakes','tires','engine','battery','lights','washer','wipers','glass','body'];
+const DEMO_EMPLOYEE = Object.freeze({id:'1001',name:'デモ運転者'});
 const copy = value => structuredClone(value);
 const failure = (code, message) => Object.assign(new Error(message), {code, ambiguous:false});
 function requireValue(ok, message, code='VALIDATION_ERROR') { if(!ok) throw failure(code,message); }
@@ -46,14 +47,13 @@ export function createDemoApi(env=globalThis, {clock=()=>new Date()}={}) {
     const next=copy(state); const result=work(next);
     next.receipts.push({id,fingerprint,result:copy(result)}); next.receipts=next.receipts.slice(-200);state=next;persist();return copy(result);
   };
-  const employeeFor=id=>{requireValue(['1001','2002'].includes(String(id)),'プレビューでは社員番号1001を入力してください。','EMPLOYEE_NOT_FOUND');return {id:String(id),name:String(id)==='1001'?'デモ運転者':'サンプル運転者'};};
   return {
-    launchContext:{employeeId:'',department:''},
-    async bootstrap(){return {departments:[...DEPARTMENTS],vehicles:vehicles.map(v=>contextFor(v.id).vehicle),serverTime:now().toISOString()};},
-    async lookupEmployee(id){return employeeFor(id);},
+    launchContext:{employeeId:DEMO_EMPLOYEE.id,department:''},
+    async bootstrap(){return {employee:copy(DEMO_EMPLOYEE),departments:[...DEPARTMENTS],vehicles:vehicles.map(v=>contextFor(v.id).vehicle),serverTime:now().toISOString()};},
     async vehicleContext(id){return contextFor(id);},
     async startTrip(payload,id){return mutation('startTrip',payload,id,next=>{
-      const ctx=contextFor(payload.vehicleId,next); const employee=employeeFor(payload.employeeId);
+      const ctx=contextFor(payload.vehicleId,next); const employee=DEMO_EMPLOYEE;
+      requireValue(payload.employeeId===undefined||payload.employeeId===null||payload.employeeId===''||String(payload.employeeId)===employee.id,'キンジロー君で認証された運転者と一致しません。','EMPLOYEE_MISMATCH');
       requireValue(DEPARTMENTS.includes(payload.department),'稼働部門を選択してください。');
       requireValue(ctx.startOdometer!==null,'出発メーターが未登録です。','INITIAL_ODOMETER_REQUIRED');
       requireValue(!ctx.activeTrip,'この車両には運転中の記録があります。','VEHICLE_IN_USE');

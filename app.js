@@ -1,4 +1,5 @@
 import { api, isDemo } from './api.js';
+import { MAX_FAVORITES, favoriteStorageKey, normalizeFavoriteIds, favoriteVehicles } from './favorites.js';
 
 const $ = id => document.getElementById(id);
 const CHECKS = [
@@ -11,13 +12,12 @@ const STORE = `drive-log:${isDemo ? 'preview' : 'live'}:v1:`;
 const DEFINITIVE_ERRORS = new Set(['VALIDATION_ERROR', 'EMPLOYEE_NOT_FOUND', 'VEHICLE_NOT_FOUND', 'INITIAL_ODOMETER_REQUIRED', 'VEHICLE_IN_USE', 'TRIP_NOT_FOUND', 'TRIP_ALREADY_COMPLETED', 'ODOMETER_DECREASE', 'REQUEST_ID_REUSED', 'EMPLOYEE_MISMATCH', 'UNAUTHORIZED', 'KINJIRO_SESSION_EXPIRED', 'CONFIGURATION_ERROR', 'UNCONFIGURED', 'ROW_CONFLICT', 'SCHEMA_ERROR']);
 const state = {
   phase: 'loading', vehicles: [], departments: [], context: null, contextLoading: false,
-  employee: null, employeeLoading: false, trip: null, busy: false,
+  employee: null, favorites: [], trip: null, busy: false,
   pendingStart: readStore('pending-start'), pendingFinish: readStore('pending-finish'),
   serverOffset: null, sheetUrl: null,
 };
-let lookupGeneration = 0;
 let contextGeneration = 0;
-let lookupTimer;
+let favoriteDraft = new Set();
 let toastTimer;
 let confirmAction;
 let historyGeneration = 0;
@@ -50,7 +50,7 @@ function setDate() {
 }
 function errorMessage(error) {
   if (error?.code === 'UNCONFIGURED' || error?.code === 'CONFIGURATION_ERROR') return 'このアプリはまだ利用準備中です。管理担当者に連絡してください。';
-  if (['UNAUTHORIZED', 'AUTH_REQUIRED', 'KINJIRO_SESSION_EXPIRED'].includes(error?.code)) return 'キンジロウの運転日報ボタンから開いてください。';
+  if (['UNAUTHORIZED', 'AUTH_REQUIRED', 'KINJIRO_SESSION_EXPIRED'].includes(error?.code)) return 'キンジロー君の運転日報ボタンから開いてください。';
   if (error?.code === 'KINJIRO_VERIFICATION_UNAVAILABLE') return '本人確認の通信ができませんでした。入力を保持しています。少し待って再度お試しください。';
   if (error?.code === 'ROW_CONFLICT') return '記録の行が変更されているため保存を止めました。入力は保持されています。管理担当者に確認してください。';
   if (error?.code === 'SCHEMA_ERROR') return '車両台帳の内容を確認できません。入力は保持されています。管理担当者に確認してください。';
@@ -83,7 +83,7 @@ function checks() {
   return result;
 }
 function startPayload() {
-  return { vehicleId: $('vehicle').value, employeeId: $('employee').value.trim(), department: $('department').value, checks: checks(), before: alcohol('before') };
+  return { vehicleId: $('vehicle').value, employeeId: state.employee?.id || '', department: $('department').value, checks: checks(), before: alcohol('before') };
 }
 function finishPayload() {
   return { tripId: state.trip?.id, destination: $('destination').value.trim(), endOdometer: numberOrNull($('end-odometer').value), refueled: $('refueled').checked, fuelLiters: $('refueled').checked ? numberOrNull($('fuel-liters').value) : null, oilChanged: $('oil-changed').checked, notes: $('notes').value.trim(), after: alcohol('after') };
@@ -95,10 +95,10 @@ function saveDraft() {
 function restoreStart(draft) {
   if (!draft) return;
   if (state.departments.includes(draft.department)) $('department').value = draft.department;
-  if (state.vehicles.some(vehicle => String(vehicle.id) === String(draft.vehicleId))) $('vehicle').value = String(draft.vehicleId);
-  $('employee').value = String(draft.employeeId || '').slice(0, 20);
-  CHECKS.forEach(([key]) => { $(`check-${key}`).checked = draft.checks?.[key] === true; });
-  setAlcohol('before', draft.before);
+  const sameVehicle = state.favorites.includes(String(draft.vehicleId));
+  $('vehicle').value = sameVehicle ? String(draft.vehicleId) : '';
+  CHECKS.forEach(([key]) => { $(`check-${key}`).checked = sameVehicle && draft.checks?.[key] === true; });
+  setAlcohol('before', sameVehicle ? draft.before : {});
 }
 function restoreFinish(draft) {
   if (!draft || String(draft.tripId) !== String(state.trip?.id)) {
@@ -125,6 +125,64 @@ function buildChecks() {
     const arrow = document.createElement('span'); arrow.className = 'item-arrow'; arrow.setAttribute('aria-hidden', 'true'); arrow.textContent = '›';
     row.append(input, dot, text, arrow); $('inspection-grid').append(row);
   });
+}
+function renderVehicleOptions(preferredId = $('vehicle').value) {
+  const vehicles = favoriteVehicles(state.vehicles, state.favorites);
+  $('vehicle').replaceChildren(new Option(vehicles.length ? '車両を選択してください' : 'お気に入りを登録してください', ''));
+  vehicles.forEach(vehicle => $('vehicle').add(new Option(vehicle.number, String(vehicle.id))));
+  if (vehicles.some(vehicle => String(vehicle.id) === String(preferredId))) $('vehicle').value = String(preferredId);
+  $('vehicle').disabled = !vehicles.length;
+  $('register-favorites').hidden = vehicles.length > 0;
+  $('favorites-help').textContent = vehicles.length ? `お気に入りの ${vehicles.length} 台を表示しています。変更は右上の「お気に入り」から。` : '右上の「お気に入り」から、使う車両を登録してください。';
+}
+function renderFavoritePicker() {
+  const search = $('favorites-search').value.normalize('NFKC').replace(/\s/g, '').toLowerCase();
+  $('favorites-list').replaceChildren();
+  let shown = 0;
+  for (const vehicle of state.vehicles) {
+    const labelText = `${vehicle.number} ${vehicle.model || ''}`;
+    if (search && !labelText.normalize('NFKC').replace(/\s/g, '').toLowerCase().includes(search)) continue;
+    shown++;
+    const id = String(vehicle.id);
+    const row = document.createElement('label'); row.className = 'favorite-option';
+    const input = document.createElement('input'); input.type = 'checkbox'; input.value = id;
+    input.checked = favoriteDraft.has(id); input.disabled = !input.checked && favoriteDraft.size >= MAX_FAVORITES;
+    input.setAttribute('aria-label', labelText);
+    const copy = document.createElement('span');
+    addText(copy, 'strong', vehicle.number); addText(copy, 'small', vehicle.model || '車種未登録');
+    const star = document.createElement('span'); star.className = 'favorite-star'; star.setAttribute('aria-hidden', 'true'); star.textContent = input.checked ? '★' : '☆';
+    input.addEventListener('change', () => {
+      if (input.checked && favoriteDraft.size >= MAX_FAVORITES) { input.checked = false; return; }
+      if (input.checked) favoriteDraft.add(id); else favoriteDraft.delete(id);
+      $('favorites-error').hidden = true;
+      renderFavoritePicker();
+      const nextInput = [...$('favorites-list').querySelectorAll('input')].find(item => item.value === id);
+      nextInput?.focus({ preventScroll: true });
+    });
+    row.append(input, copy, star); $('favorites-list').append(row);
+  }
+  $('favorites-count').textContent = `${favoriteDraft.size} / ${MAX_FAVORITES}`;
+  $('favorites-count').classList.toggle('is-complete', favoriteDraft.size === MAX_FAVORITES);
+  $('favorites-no-results').hidden = shown > 0;
+}
+function openFavorites() {
+  if (state.busy || state.pendingStart || !state.employee || state.phase !== 'start') return;
+  favoriteDraft = new Set(state.favorites);
+  $('favorites-search').value = ''; $('favorites-error').hidden = true;
+  renderFavoritePicker(); $('favorites-dialog').showModal();
+}
+async function saveFavorites() {
+  if (!state.employee || state.busy || state.pendingStart || state.phase !== 'start') return;
+  const next = normalizeFavoriteIds([...favoriteDraft], state.vehicles);
+  if (!writeStore(favoriteStorageKey(state.employee.id), next)) {
+    $('favorites-error').textContent = 'お気に入りを保存できません。ブラウザの保存設定をご確認ください。'; $('favorites-error').hidden = false; return;
+  }
+  const previous = $('vehicle').value;
+  state.favorites = next; renderVehicleOptions(previous);
+  if (previous !== $('vehicle').value) { CHECKS.forEach(([key]) => { $(`check-${key}`).checked = false; }); setAlcohol('before'); }
+  $('favorites-dialog').close(); saveDraft(); renderControls();
+  if (previous !== $('vehicle').value) await loadVehicle({ warnings: false });
+  toast(next.length ? `お気に入りを ${next.length} 台登録しました` : 'お気に入りを解除しました');
 }
 function renderChecks() {
   const applies = currentVehicle()?.requiresClutch === true;
@@ -173,12 +231,12 @@ function startIssue() {
   if (state.pendingStart) return '保存結果を上のボタンから再確認してください。';
   if (!navigator.onLine) return '通信が戻ると記録できます。';
   if (!$('department').value) return '稼働部門を選択してください。';
+  if (!state.favorites.length) return 'お気に入りに使う車両を登録してください。';
   if (!$('vehicle').value) return '車両を選択してください。';
   if (state.contextLoading) return '車両情報を確認しています。';
   if (!state.context) return '車両情報を確認できていません。車両を選び直してください。';
   if (state.context.activeTrip) return 'この車両の運転中の記録を開けます。';
-  if (state.employeeLoading) return '運転者を確認しています。';
-  if (!state.employee || String(state.employee.id) !== $('employee').value.trim()) return '社員番号を入力して運転者を確認してください。';
+  if (!state.employee?.name) return 'キンジロー君の運転日報ボタンから開いて、運転者を確認してください。';
   if (!validNumber(state.context.startOdometer)) return '出発メーター未登録のため、まだ出発できません。';
   const remaining = renderChecks();
   if (remaining) return `車両点検を確認してください（残り ${remaining} 項目）。`;
@@ -207,6 +265,19 @@ function renderControls() {
   $('offline-banner').hidden = navigator.onLine;
   const pending = state.phase === 'active' ? state.pendingFinish : state.phase === 'start' ? state.pendingStart : null;
   $('pending-notice').hidden = !pending || state.busy;
+  if (pending) {
+    const payload = pending.payload;
+    const isStart = state.phase === 'start';
+    const vehicle = state.vehicles.find(item => String(item.id) === String(isStart ? payload.vehicleId : state.trip?.vehicleId));
+    const driver = isStart ? String(payload.employeeId) === String(state.employee?.id) ? state.employee.name : '本人認証の再確認が必要' : state.trip?.employeeName || '氏名確認中';
+    const parts = [vehicle?.number || '車両情報を確認できません', isStart ? payload.department : state.trip?.department, `運転者 ${driver}`];
+    if (isStart) {
+      parts.push(`点検 ${Object.values(payload.checks || {}).filter(value => value === true).length}項目`);
+      const before = payload.before || {};
+      parts.push(`運転前対面確認 ${before.confirmed ? '確認済み' : '未確認'} / 測定値 ${before.reading == null ? '未入力' : before.reading + ' mg/L'} / 酒気帯び ${before.presence || '無'}`);
+    } else parts.push(`行き先 ${payload.destination || '未入力'} / 終了メーター ${km(payload.endOdometer)} km`);
+    $('pending-summary').textContent = parts.filter(Boolean).join('　／　');
+  }
   $('pending-retry').disabled = state.busy || !navigator.onLine;
   $('start-fields').disabled = state.busy || !!state.pendingStart;
   $('inspection-fields').disabled = state.busy || !!state.pendingStart;
@@ -215,6 +286,7 @@ function renderControls() {
   $('open-active-trip').disabled = state.busy;
   $('next-drive').disabled = state.busy;
   $('history-button').disabled = state.busy || (!state.trip && !$('vehicle').value) || state.phase === 'loading' || state.phase === 'error';
+  $('favorites-button').disabled = state.busy || !!state.pendingStart || !state.employee || state.phase !== 'start';
   const startReason = state.phase === 'start' ? startIssue() : '準備中';
   const finishReason = state.phase === 'active' ? finishIssue() : '準備中';
   $('start-guidance').textContent = startReason || '準備ができました。気をつけていってらっしゃい。';
@@ -278,32 +350,6 @@ class SlideControl {
 const startSlider = new SlideControl('start-slider', () => submitStart());
 const finishSlider = new SlideControl('finish-slider', () => submitFinish());
 
-async function lookupEmployee(delay = 350) {
-  clearTimeout(lookupTimer);
-  const generation = ++lookupGeneration;
-  const employeeId = $('employee').value.trim();
-  state.employee = null; state.employeeLoading = !!employeeId;
-  $('employee-status').classList.remove('employee-found', 'error-text');
-  $('employee-status').textContent = employeeId ? '運転者を確認しています…' : '社員番号から氏名を確認します。';
-  renderControls();
-  if (!employeeId) return;
-  lookupTimer = setTimeout(async () => {
-    try {
-      const employee = await api.lookupEmployee(employeeId);
-      if (generation !== lookupGeneration) return;
-      if (!employee?.name || String(employee.id) !== employeeId) throw new Error('社員番号を確認できませんでした。');
-      state.employee = employee;
-      $('employee-status').textContent = `✓ ${employee.name} さん`;
-      $('employee-status').classList.add('employee-found');
-    } catch (error) {
-      if (generation !== lookupGeneration) return;
-      $('employee-status').textContent = errorMessage(error);
-      $('employee-status').classList.add('error-text');
-    } finally {
-      if (generation === lookupGeneration) { state.employeeLoading = false; renderControls(); }
-    }
-  }, delay);
-}
 async function loadVehicle({ warnings = true } = {}) {
   const generation = ++contextGeneration;
   const vehicle = currentVehicle();
@@ -367,7 +413,7 @@ function enterTrip(trip) {
   $('trip-department').textContent = trip.department || '—';
   $('trip-model').textContent = trip.model || '車両';
   $('trip-number').textContent = trip.vehicleNumber || state.vehicles.find(item => String(item.id) === String(trip.vehicleId))?.number || '—';
-  $('trip-driver').textContent = `運転者 ${trip.employeeName || ''}　社員番号 ${trip.employeeId || ''}`;
+  $('trip-driver').textContent = `運転者 ${trip.employeeName || ''}`;
   $('trip-started').textContent = `${time(trip.startedAt)} 出発`;
   $('trip-start-meter').textContent = km(trip.startOdometer);
   setVehicleImage($('trip-vehicle-image'), trip);
@@ -443,7 +489,6 @@ async function nextDrive() {
   state.phase = 'start'; state.trip = null; state.sheetUrl = null; clearError();
   CHECKS.forEach(([key]) => { $(`check-${key}`).checked = false; });
   setAlcohol('before'); restoreFinish(null); saveDraft(); renderControls();
-  lookupEmployee(0);
   await loadVehicle();
   $('department').focus({ preventScroll: true }); window.scrollTo({ top: 0, behavior: 'instant' });
 }
@@ -468,7 +513,7 @@ async function openHistory() {
     result.trips.forEach(trip => {
       const card = document.createElement('article'); card.className = 'history-entry';
       addText(card, 'h3', `${time(trip.startedAt)} 出発`);
-      addText(card, 'p', `${trip.department || ''}　${trip.employeeName || trip.employeeId || ''}`, 'history-meta');
+      addText(card, 'p', `${trip.department || ''}　${trip.employeeName || '氏名未登録'}`, 'history-meta');
       if (trip.status === 'active') addText(card, 'p', '運転中');
       else { addText(card, 'p', `${km(trip.distance ?? (trip.endOdometer - trip.startOdometer))} km`, 'history-distance'); addText(card, 'p', `${time(trip.completedAt)} 完了`, 'history-meta'); }
       if (trip.destination) addText(card, 'p', trip.destination);
@@ -497,19 +542,20 @@ async function initialize() {
   $('boot-status').querySelector('.loading-orbit').hidden = false;
   try {
     const bootstrap = await api.bootstrap();
+    if (!bootstrap.employee?.id || typeof bootstrap.employee.name !== 'string' || !bootstrap.employee.name.trim()) throw { code: 'AUTH_REQUIRED' };
+    state.employee = { id: String(bootstrap.employee.id), name: bootstrap.employee.name };
+    $('driver-name').value = state.employee.name;
     state.vehicles = bootstrap.vehicles || []; state.departments = bootstrap.departments || [];
+    state.favorites = normalizeFavoriteIds(readStore(favoriteStorageKey(state.employee.id)), state.vehicles);
     const serverTimestamp = new Date(bootstrap.serverTime).getTime();
     state.serverOffset = Number.isFinite(serverTimestamp) ? serverTimestamp - Date.now() : null; setDate();
     $('department').replaceChildren(new Option('選択してください', ''));
     state.departments.forEach(department => { const value = typeof department === 'string' ? department : department.name || department.id; $('department').add(new Option(value, value)); });
     state.departments = state.departments.map(department => typeof department === 'string' ? department : department.name || department.id);
-    $('vehicle').replaceChildren(new Option('車両を選択してください', ''));
-    state.vehicles.forEach(vehicle => $('vehicle').add(new Option(vehicle.number, String(vehicle.id))));
+    renderVehicleOptions();
     const draft = readStore('draft');
     restoreStart(state.pendingStart?.payload || draft?.start);
     const launch = api.launchContext || {};
-    if (launch.employeeId && !state.pendingStart) $('employee').value = String(launch.employeeId);
-    $('employee').readOnly = !!launch.employeeId;
     if (launch.department && state.departments.includes(launch.department) && !state.pendingStart) $('department').value = launch.department;
     state.phase = 'start';
     const activeTripId = readStore('active-trip') || state.pendingFinish?.payload?.tripId;
@@ -523,7 +569,7 @@ async function initialize() {
         else { state.phase = 'error'; throw error; }
       }
     }
-    if (state.phase === 'start') { renderVehicle(); await loadVehicle(); lookupEmployee(0); }
+    if (state.phase === 'start') { renderVehicle(); await loadVehicle(); }
     renderControls();
   } catch (error) {
     state.phase = 'error'; $('boot-title').textContent = 'アプリを開けませんでした'; $('boot-message').textContent = errorMessage(error);
@@ -540,11 +586,14 @@ $('vehicle').addEventListener('change', () => {
   clearError(); CHECKS.forEach(([key]) => { $(`check-${key}`).checked = false; }); setAlcohol('before');
   saveDraft(); loadVehicle();
 });
-$('employee').addEventListener('input', () => { saveDraft(); lookupEmployee(); });
 ['inspection-fields', 'before-alcohol'].forEach(id => $(id).addEventListener('input', () => { saveDraft(); renderControls(); }));
 $('finish-fields').addEventListener('input', () => { renderFinish(); saveDraft(); renderControls(); });
 $('refueled').addEventListener('change', () => { if ($('refueled').checked) $('fuel-liters').focus(); });
 $('history-button').addEventListener('click', openHistory);
+$('favorites-button').addEventListener('click', openFavorites);
+$('register-favorites').addEventListener('click', openFavorites);
+$('favorites-search').addEventListener('input', renderFavoritePicker);
+$('favorites-save').addEventListener('click', saveFavorites);
 $('open-active-trip').addEventListener('click', openActiveTrip);
 $('next-drive').addEventListener('click', nextDrive);
 $('boot-retry').addEventListener('click', initialize);
@@ -555,7 +604,7 @@ $('confirm-cancel').addEventListener('click', () => { $('confirm-dialog').close(
 $('confirm-submit').addEventListener('click', () => { const action = confirmAction; confirmAction = null; $('confirm-dialog').close(); action?.(); });
 document.querySelectorAll('[data-close-dialog]').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog) { const bounds = dialog.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close(); } }));
-window.addEventListener('online', () => { renderControls(); if (state.phase === 'start') { loadVehicle(); lookupEmployee(0); } toast('通信が戻りました'); });
+window.addEventListener('online', () => { renderControls(); if (state.phase === 'start') loadVehicle(); toast('通信が戻りました'); });
 window.addEventListener('offline', renderControls);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) setDate(); });
 if ('serviceWorker' in navigator && !isDemo) window.addEventListener('load', () => { navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => { /* The app remains usable without installation. */ }); });
