@@ -239,8 +239,8 @@ test('decreasing or absent end meters and nonpositive checked fuel are rejected 
 
 test('readings preserve blank versus zero, confirmations and combined alcohol presence', () => {
   const f = fixture();
-  const trip = f.start({ before: { confirmed: false, reading: 0, presence: '有' } }).data.trip;
-  f.finish(trip.id, { after: { confirmed: true, reading: null, presence: '無' }, notes: 'タイヤ傷を確認' });
+  const trip = f.start({ before: { confirmed: false, reading: 0, presence: '無' } }).data.trip;
+  assert.equal(f.finish(trip.id, { after: { confirmed: true, reading: null, presence: '有' }, notes: 'タイヤ傷を確認' }).ok, true);
   assert.equal(f.cell('運転前対面確認者'), '');
   assert.equal(f.cell('運転前検知器結果(mg/L)'), 0);
   assert.equal(f.cell('運転後対面確認者'), 'OK');
@@ -248,6 +248,53 @@ test('readings preserve blank versus zero, confirmations and combined alcohol pr
   assert.equal(f.cell('酒気帯び(有/無)'), '有');
   assert.equal(f.cell('指示事項'), '');
   assert.equal(f.vehicle.formats.get(`2:${HEADERS.indexOf('運転前検知器結果(mg/L)') + 1}`), '0.00');
+});
+
+test('new start requires explicit alcohol absence and creates no driving record when blocked', () => {
+  const present = fixture();
+  const denied = present.start({ before: { confirmed: true, reading: 0, presence: '有' } });
+  assert.equal(denied.error.code, 'ALCOHOL_PRESENT');
+  assert.equal(denied.error.message, '酒気帯びが「有」のため出発できません。');
+  assert.equal(present.vehicle.getLastRow(), 1);
+  assert.equal(present.master.data[1][MASTER.indexOf('現在の距離')], '');
+  assert.equal(present.ss.getSheetByName('_運転日報_記録管理').getLastRow(), 1);
+  assert.equal(present.ss.getSheetByName('_運転日報_リクエスト').getLastRow(), 1);
+  for (const presence of [undefined, null, '', '未選択', '無 ', false, 0]) {
+    const f = fixture();
+    assert.equal(f.start({ before: { confirmed: true, reading: null, presence } }).error.code, 'VALIDATION_ERROR');
+    assert.equal(f.vehicle.getLastRow(), 1);
+  }
+  assert.equal(fixture().start({ before: { confirmed: true, reading: null, presence: '無' } }).ok, true);
+});
+
+test('historical alcohol-present start requests still replay and recover without creating a new start', () => {
+  const f = fixture();
+  const original = f.start({}, { requestId: 'legacy-present-start' });
+  const requests = f.ss.getSheetByName('_運転日報_リクエスト');
+  const records = f.ss.getSheetByName('_運転日報_記録管理');
+  // Model a request persisted before the alcohol-start rule was introduced.
+  const operation = JSON.parse(requests.data[1][4]);
+  operation.trip.before.presence = '有'; operation.fields.presence = '有';
+  requests.data[1][2] = requests.data[1][2].replace('"presence":"無"', '"presence":"有"');
+  requests.data[1][4] = JSON.stringify(operation);
+  const response = JSON.parse(requests.data[1][5]); response.data.trip.before.presence = '有';
+  requests.data[1][5] = JSON.stringify(response);
+  records.data[1][3] = JSON.stringify(operation.trip);
+  f.vehicle.data[1][HEADERS.indexOf('酒気帯び(有/無)')] = '有';
+  const replay = f.start({ before: { confirmed: true, reading: null, presence: '有' } }, { requestId: 'legacy-present-start' });
+  assert.equal(replay.ok, true);
+  assert.equal(replay.data.trip.id, original.data.trip.id);
+  assert.equal(replay.data.trip.before.presence, '有');
+  assert.equal(f.vehicle.getLastRow(), 2);
+  requests.data[1][3] = 'pending';
+  records.data = [records.data[0]];
+  const context = f.call('vehicleContext', { vehicleId: 'テスト410え8' }).data;
+  assert.equal(context.activeTrip.id, original.data.trip.id);
+  assert.equal(context.activeTrip.before.presence, '有');
+  assert.equal(requests.data[1][3], 'committed');
+  assert.equal(f.vehicle.getLastRow(), 2);
+  assert.equal(f.finish(original.data.trip.id).ok, true);
+  assert.equal(f.cell('酒気帯び(有/無)'), '有');
 });
 
 test('only MT requires the clutch check; all other applicable checks are mandatory', () => {

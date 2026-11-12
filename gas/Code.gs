@@ -185,6 +185,9 @@ function startTrip_(ss, store, request, auth, fingerprint) {
   var required = DRIVE_LOG_.checks.concat(vehicle.requiresClutch ? ['clutch'] : []);
   if (!p.checks || required.some(function (key) { return p.checks[key] !== true; })) fail_('VALIDATION_ERROR', 'すべての対象点検を確認してください。');
   var before = alcohol_(p.before);
+  // Applies only to new starts. Previously persisted requests recover/replay
+  // before entering this handler so historical operations remain recoverable.
+  if (before.presence !== '無') fail_('ALCOHOL_PRESENT', '酒気帯びが「有」のため出発できません。');
   var startedAt = nowJst_();
   var trip = {
     id: Utilities.getUuid(), vehicleId: vehicle.id, vehicleNumber: vehicle.number, model: vehicle.model, modelKey: vehicle.modelKey,

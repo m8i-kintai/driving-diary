@@ -56,6 +56,39 @@ test('a different employee ID cannot replace the authenticated preview driver', 
   assert.equal(trip.employeeName, 'デモ運転者');
 });
 
+test('pre-drive alcohol presence blocks departure without creating a record', async () => {
+  const { api } = setup();
+  const payload = await startPayload(api, { before: { confirmed: true, reading: 0.12, presence: '有' } });
+  await assert.rejects(api.startTrip(payload, 'alcohol-blocked'), { code: 'ALCOHOL_PRESENT', message: '酒気帯びが「有」のため出発できません。' });
+  assert.equal((await api.vehicleContext(payload.vehicleId)).activeTrip, null);
+  assert.equal((await api.listHistory(payload.vehicleId)).trips.length, 0);
+  const corrected = { ...payload, before: { confirmed: true, reading: 0, presence: '無' } };
+  const { trip } = await api.startTrip(corrected, 'alcohol-blocked');
+  assert.equal(trip.before.presence, '無');
+  assert.equal((await api.listHistory(payload.vehicleId)).trips.length, 1);
+});
+
+test('departure requires every applicable check and an explicit alcohol absence', async () => {
+  const { api } = setup();
+  const payload = await startPayload(api);
+  for (const key of CHECKS.filter(key => key !== 'clutch')) {
+    await assert.rejects(api.startTrip({ ...payload, checks: { ...payload.checks, [key]: false } }, 'missing-' + key), { code: 'VALIDATION_ERROR' });
+  }
+  for (const presence of [undefined, '', '未確認']) {
+    await assert.rejects(api.startTrip({ ...payload, before: { ...payload.before, presence } }, 'unconfirmed-' + String(presence)), { code: 'VALIDATION_ERROR' });
+  }
+  assert.equal((await api.listHistory(payload.vehicleId)).trips.length, 0);
+});
+
+test('post-drive alcohol presence remains recordable at completion', async () => {
+  const { api } = setup();
+  const { trip } = await api.startTrip(await startPayload(api), 'after-presence-start');
+  const result = await api.finishTrip(finishPayload(trip, { after: { confirmed: true, reading: 0.12, presence: '有' } }), 'after-presence-finish');
+  assert.equal(result.trip.status, 'completed');
+  assert.deepEqual(result.trip.after, { confirmed: true, reading: 0.12, presence: '有' });
+  assert.equal((await api.getTrip(trip.id)).trip.after.presence, '有');
+});
+
 test('optional alcohol measurements preserve the difference between null and zero', async () => {
   const { api } = setup();
   const payload = await startPayload(api);

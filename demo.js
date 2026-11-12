@@ -58,7 +58,8 @@ export function createDemoApi(env=globalThis, {clock=()=>new Date()}={}) {
       requireValue(ctx.startOdometer!==null,'出発メーターが未登録です。','INITIAL_ODOMETER_REQUIRED');
       requireValue(!ctx.activeTrip,'この車両には運転中の記録があります。','VEHICLE_IN_USE');
       requireValue(CHECKS.every(key=>payload.checks?.[key]===true)&&(!ctx.vehicle.requiresClutch||payload.checks?.clutch===true),'対象の点検項目をすべて確認してください。','VALIDATION_ERROR');
-      requireValue(['有','無'].includes(payload.before?.presence),'酒気帯びの有無を選択してください。');
+      requireValue(['有','無'].includes(payload.before?.presence),'アルコール確認の状態を入力してください。');
+      requireValue(payload.before.presence==='無','酒気帯びが「有」のため出発できません。','ALCOHOL_PRESENT');
       const trip={id:'demo-'+id,vehicleId:ctx.vehicle.id,vehicleNumber:ctx.vehicle.number,model:ctx.vehicle.model,modelKey:ctx.vehicle.modelKey,employeeId:employee.id,employeeName:employee.name,department:payload.department,startedAt:now().toISOString(),startOdometer:ctx.startOdometer,before:{confirmed:payload.before.confirmed===true,reading:reading(payload.before.reading),presence:payload.before.presence},status:'active'};
       next.trips.push(trip);return {trip};
     });},

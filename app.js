@@ -9,7 +9,7 @@ const CHECKS = [
 ];
 const MODELS = new Set(['hiace', 'hijet', 'succeed', 'probox', 'toyoace']);
 const STORE = `drive-log:${isDemo ? 'preview' : 'live'}:v1:`;
-const DEFINITIVE_ERRORS = new Set(['VALIDATION_ERROR', 'EMPLOYEE_NOT_FOUND', 'VEHICLE_NOT_FOUND', 'INITIAL_ODOMETER_REQUIRED', 'VEHICLE_IN_USE', 'TRIP_NOT_FOUND', 'TRIP_ALREADY_COMPLETED', 'ODOMETER_DECREASE', 'REQUEST_ID_REUSED', 'EMPLOYEE_MISMATCH', 'UNAUTHORIZED', 'KINJIRO_SESSION_EXPIRED', 'CONFIGURATION_ERROR', 'UNCONFIGURED', 'ROW_CONFLICT', 'SCHEMA_ERROR']);
+const DEFINITIVE_ERRORS = new Set(['VALIDATION_ERROR', 'EMPLOYEE_NOT_FOUND', 'VEHICLE_NOT_FOUND', 'INITIAL_ODOMETER_REQUIRED', 'VEHICLE_IN_USE', 'TRIP_NOT_FOUND', 'TRIP_ALREADY_COMPLETED', 'ODOMETER_DECREASE', 'REQUEST_ID_REUSED', 'EMPLOYEE_MISMATCH', 'UNAUTHORIZED', 'KINJIRO_SESSION_EXPIRED', 'CONFIGURATION_ERROR', 'UNCONFIGURED', 'ROW_CONFLICT', 'SCHEMA_ERROR', 'ALCOHOL_PRESENT']);
 const state = {
   phase: 'loading', vehicles: [], departments: [], context: null, contextLoading: false,
   employee: null, favorites: [], trip: null, busy: false,
@@ -238,6 +238,7 @@ function startIssue() {
   if (state.context.activeTrip) return 'この車両の運転中の記録を開けます。';
   if (!state.employee?.name) return 'キンジロー君の運転日報ボタンから開いて、運転者を確認してください。';
   if (!validNumber(state.context.startOdometer)) return '出発メーター未登録のため、まだ出発できません。';
+  if (alcohol('before').presence !== '無') return '酒気帯びが「有」のため出発できません。';
   const remaining = renderChecks();
   if (remaining) return `車両点検を確認してください（残り ${remaining} 項目）。`;
   const reading = alcohol('before').reading;
@@ -287,6 +288,7 @@ function renderControls() {
   $('next-drive').disabled = state.busy;
   $('history-button').disabled = state.busy || (!state.trip && !$('vehicle').value) || state.phase === 'loading' || state.phase === 'error';
   $('favorites-button').disabled = state.busy || !!state.pendingStart || !state.employee || state.phase !== 'start';
+  $('before-alcohol-block').hidden = alcohol('before').presence === '無';
   const startReason = state.phase === 'start' ? startIssue() : '準備中';
   const finishReason = state.phase === 'active' ? finishIssue() : '準備中';
   $('start-guidance').textContent = startReason || '準備ができました。気をつけていってらっしゃい。';
