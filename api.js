@@ -145,4 +145,7 @@ export function createApi({ config = {}, env = globalThis, auth } = {}) {
 
 const browserEnv = typeof window === 'undefined' ? null : window;
 export const isDemo = Boolean(browserEnv && new URLSearchParams(browserEnv.location.search).get('demo') === '1');
-export const api = browserEnv ? (isDemo ? createDemoApi(browserEnv) : createApi({ config: browserEnv.DRIVE_CONFIG || {}, env: browserEnv })) : null;
+export const api = browserEnv ? (isDemo
+  ? createDemoApi(browserEnv, new URLSearchParams(browserEnv.location.search).get('demoUser') === 'handover'
+    ? { employee: { id: '2002', name: '引継ぎ運転者（デモ）' } } : {})
+  : createApi({ config: browserEnv.DRIVE_CONFIG || {}, env: browserEnv })) : null;

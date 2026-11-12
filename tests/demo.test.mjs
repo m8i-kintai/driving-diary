@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { createDemoApi } from '../demo.js';
 
 const CHECKS = ['brakes', 'tires', 'engine', 'battery', 'lights', 'washer', 'wipers', 'glass', 'body', 'clutch'];
-function setup() {
+function setup(employee) {
   const data = new Map();
   const env = { localStorage: { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, String(value)) } };
   let clock = new Date('2026-11-12T08:00:00+09:00');
-  const options = { clock: () => clock };
+  const options = { clock: () => clock, ...(employee ? { employee } : {}) };
   return { env, options, api: createDemoApi(env, options), advance() { clock = new Date(clock.getTime() + 3600_000); } };
 }
 async function startPayload(api, overrides = {}) {
@@ -54,6 +54,104 @@ test('a different employee ID cannot replace the authenticated preview driver', 
   assert.equal((await api.listHistory(payload.vehicleId)).trips.length, 0);
   const { trip } = await api.startTrip({ ...payload, employeeId: '1001' }, 'identity-match');
   assert.equal(trip.employeeName, 'デモ運転者');
+});
+
+test('another authenticated employee can complete the departure and both trusted names are recorded', async () => {
+  const first = { id: '1001', name: '出発者A' };
+  const second = { id: '2002', name: '完了者B' };
+  const { api, env, options } = setup(first);
+  const completingApi = createDemoApi(env, { ...options, employee: second });
+  const started = await api.startTrip(await startPayload(api), 'handover-start');
+  assert.equal(started.trip.recordedDriverName, '出発者A');
+  assert.equal('completedDepartment' in started.trip, false);
+  const context = await completingApi.vehicleContext(started.trip.vehicleId);
+  assert.equal(context.activeTrip.id, started.trip.id);
+  assert.equal(context.activeTrip.recordedDriverName, '出発者A');
+  const payload = finishPayload(started.trip, { employeeName: '偽の氏名', completedByEmployeeId: '9999', completedByEmployeeName: '偽の完了者', recordedDriverName: '任意の表示' });
+  const completed = await completingApi.finishTrip(payload, 'handover-finish');
+  assert.equal(completed.trip.employeeId, first.id);
+  assert.equal(completed.trip.employeeName, first.name);
+  assert.equal(completed.trip.completedByEmployeeId, second.id);
+  assert.equal(completed.trip.completedByEmployeeName, second.name);
+  assert.equal(completed.trip.recordedDriverName, '出発者A ／ 完了者B');
+  assert.equal((await api.getTrip(started.trip.id)).trip.recordedDriverName, '出発者A ／ 完了者B');
+  assert.equal((await api.listHistory(started.trip.vehicleId)).trips[0].recordedDriverName, '出発者A ／ 完了者B');
+  assert.equal((await api.vehicleContext(started.trip.vehicleId)).activeTrip, null);
+  assert.equal((await api.listHistory(started.trip.vehicleId)).trips.length, 1);
+});
+
+test('recorded driver names are combined by employee ID rather than spelling', async () => {
+  for (const [completer, expected] of [
+    [{ id: '1001', name: '更新後の氏名' }, '出発時氏名'],
+    [{ id: '2002', name: '出発時氏名' }, '出発時氏名 ／ 出発時氏名'],
+  ]) {
+    const { api, env, options } = setup({ id: '1001', name: '出発時氏名' });
+    const { trip } = await api.startTrip(await startPayload(api), 'name-start');
+    const completingApi = createDemoApi(env, { ...options, employee: completer });
+    assert.deepEqual((await completingApi.bootstrap()).employee, completer);
+    const result = await completingApi.finishTrip(finishPayload(trip), 'name-finish');
+    assert.equal(result.trip.recordedDriverName, expected);
+    assert.equal(result.trip.completedByEmployeeName, completer.name);
+  }
+});
+
+test('mutation receipts can only be retried by the authenticated employee who made that action', async () => {
+  const { api, env, options } = setup({ id: '1001', name: '出発者A' });
+  const other = createDemoApi(env, { ...options, employee: { id: '2002', name: '完了者B' } });
+  const start = await startPayload(api);
+  const started = await api.startTrip(start, 'owned-start');
+  await assert.rejects(other.startTrip(start, 'owned-start'), { code: 'EMPLOYEE_MISMATCH' });
+  assert.deepEqual(await api.startTrip(start, 'owned-start'), started);
+  const finish = finishPayload(started.trip);
+  const completed = await other.finishTrip(finish, 'owned-finish');
+  await assert.rejects(api.finishTrip(finish, 'owned-finish'), { code: 'EMPLOYEE_MISMATCH' });
+  assert.deepEqual(await other.finishTrip(finish, 'owned-finish'), completed);
+  await assert.rejects(api.finishTrip(finish, 'new-finish'), { code: 'TRIP_ALREADY_COMPLETED' });
+  assert.equal((await api.listHistory(start.vehicleId)).trips.length, 1);
+});
+
+test('legacy finish receipts without a completed-by employee belong to the departure employee', async () => {
+  const { api, env, options } = setup({ id: '1001', name: '以前の運転者' });
+  const { trip } = await api.startTrip(await startPayload(api), 'legacy-start');
+  const finish = finishPayload(trip);
+  await api.finishTrip(finish, 'legacy-finish');
+  const key = 'drivelog.demo.v1';
+  const saved = JSON.parse(env.localStorage.getItem(key));
+  const receipt = saved.receipts.find(item => item.id === 'legacy-finish');
+  delete receipt.ownerEmployeeId;
+  delete receipt.result.trip.completedByEmployeeId;
+  delete receipt.result.trip.completedByEmployeeName;
+  delete receipt.result.trip.recordedDriverName;
+  env.localStorage.setItem(key, JSON.stringify(saved));
+  const restored = createDemoApi(env, options);
+  assert.equal((await restored.finishTrip(finish, 'legacy-finish')).trip.recordedDriverName, '以前の運転者');
+  const other = createDemoApi(env, { ...options, employee: { id: '2002', name: '別の運転者' } });
+  await assert.rejects(other.finishTrip(finish, 'legacy-finish'), { code: 'EMPLOYEE_MISMATCH' });
+});
+
+test('completion stores the selected department while retaining the departure department', async () => {
+  const { api, env, options } = setup({ id: '1001', name: '出発者A' });
+  const payload = await startPayload(api, { department: '建設1G' });
+  const { trip } = await api.startTrip(payload, 'department-start');
+  const other = createDemoApi(env, { ...options, employee: { id: '2002', name: '完了者B' } });
+  const result = await other.finishTrip(finishPayload(trip, { department: '建設2G' }), 'department-finish');
+  assert.equal(result.trip.department, '建設1G');
+  assert.equal(result.trip.completedDepartment, '建設2G');
+  const saved = (await api.getTrip(trip.id)).trip;
+  assert.equal(saved.department, '建設1G');
+  assert.equal(saved.completedDepartment, '建設2G');
+});
+
+test('an omitted completion department falls back while explicit invalid departments are rejected', async () => {
+  const { api } = setup();
+  const { trip } = await api.startTrip(await startPayload(api, { department: '管理G' }), 'department-fallback-start');
+  for (const department of [null, '', '未登録の部門']) {
+    await assert.rejects(api.finishTrip(finishPayload(trip, { department }), 'department-fallback-finish'), { code: 'VALIDATION_ERROR', message: '稼働部門を選択してください。' });
+  }
+  assert.equal((await api.getTrip(trip.id)).trip.status, 'active');
+  const completed = await api.finishTrip(finishPayload(trip), 'department-fallback-finish');
+  assert.equal(completed.trip.department, '管理G');
+  assert.equal(completed.trip.completedDepartment, '管理G');
 });
 
 test('pre-drive alcohol presence blocks departure without creating a record', async () => {

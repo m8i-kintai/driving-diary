@@ -1,6 +1,6 @@
 // Cache only the public application shell. GAS requests never enter this cache.
-const CACHE_NAME = 'drive-log-shell-v2';
-const SHELL = ['./', './index.html', './styles.css', './app.js', './api.js', './demo.js', './favorites.js', './config.js', './manifest.webmanifest', './assets/icon.svg'];
+const CACHE_NAME = 'drive-log-shell-v3';
+const SHELL = ['./', './index.html', './styles.css', './app.js', './api.js', './demo.js', './favorites.js', './journey.js', './config.js', './manifest.webmanifest', './assets/icon.svg'];
 const scopeUrl = new URL('./', self.location.href);
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(SHELL)));
@@ -13,7 +13,7 @@ self.addEventListener('fetch', event => {
   const url = new URL(request.url);
   if (request.method !== 'GET' || url.origin !== scopeUrl.origin || !url.pathname.startsWith(scopeUrl.pathname) || url.search) return;
   const relativePath = url.pathname.slice(scopeUrl.pathname.length);
-  const isShell = relativePath === '' || ['index.html', 'styles.css', 'app.js', 'api.js', 'demo.js', 'favorites.js', 'config.js', 'manifest.webmanifest', 'assets/icon.svg'].includes(relativePath);
+  const isShell = relativePath === '' || ['index.html', 'styles.css', 'app.js', 'api.js', 'demo.js', 'favorites.js', 'journey.js', 'config.js', 'manifest.webmanifest', 'assets/icon.svg'].includes(relativePath);
   const isVehicle = /^assets\/vehicles\/(hiace|hijet|succeed|probox|toyoace)\.png$/.test(relativePath);
   if (!isShell && !isVehicle) return;
   event.respondWith(fetch(request).then(response => {

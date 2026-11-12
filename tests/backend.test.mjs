@@ -407,14 +407,129 @@ test('the identity cache retains verified name and re-verifies incomplete or exp
   assert.equal(f.call('bootstrap').error.code, 'KINJIRO_SESSION_EXPIRED');
 });
 
-test('a different authenticated employee cannot start for or finish another employee', () => {
+test('start stays bound to self while another verified employee may complete the trip', () => {
   const f = fixture();
   assert.equal(f.start({ employeeId: '0002', employeeName: '佐藤 花子' }).error.code, 'EMPLOYEE_MISMATCH');
   const trip = f.start().data.trip;
+  assert.equal(trip.recordedDriverName, '山田 太郎');
   const other = { kinjiro: { employeeId: '0002', token: 'other-employee-token' } };
-  assert.equal(f.finish(trip.id, {}, other).error.code, 'EMPLOYEE_MISMATCH');
-  assert.equal(f.call('getTrip', { tripId: trip.id }).data.trip.status, 'active');
+  const result = f.finish(trip.id, { department: '技術G', completedByEmployeeId: '0003', completedByEmployeeName: 'クライアント指定の偽氏名' }, other);
+  assert.equal(result.ok, true);
+  assert.equal(result.data.trip.employeeId, '0001');
+  assert.equal(result.data.trip.employeeName, '山田 太郎');
+  assert.equal(result.data.trip.completedByEmployeeId, '0002');
+  assert.equal(result.data.trip.completedByEmployeeName, '佐藤 花子');
+  assert.equal(result.data.trip.department, '管理G');
+  assert.equal(result.data.trip.completedDepartment, '技術G');
+  assert.equal(result.data.trip.recordedDriverName, '山田 太郎 ／ 佐藤 花子');
+  assert.equal(f.cell('運転者'), '山田 太郎 ／ 佐藤 花子');
+  const stored = JSON.parse(f.ss.getSheetByName('_運転日報_記録管理').data[1][3]);
+  assert.equal(stored.completedByEmployeeId, '0002');
+  assert.equal(stored.completedByEmployeeName, '佐藤 花子');
+  assert.equal(stored.department, '管理G');
+  assert.equal(stored.completedDepartment, '技術G');
+  assert.equal(f.vehicle.data[0].length, 19);
+  assert.equal(f.vehicle.data[1].length, 19);
+  assert.equal(f.call('getTrip', { tripId: trip.id }).data.trip.recordedDriverName, '山田 太郎 ／ 佐藤 花子');
+  assert.equal(f.call('listHistory', { vehicleId: trip.vehicleId }).data.trips[0].completedByEmployeeId, '0002');
+  assert.equal(f.call('vehicleContext', { vehicleId: trip.vehicleId }).data.activeTrip, null);
+});
+
+test('same employee ID records the starting name once even if the verified name changes', () => {
+  const f = fixture(); const trip = f.start().data.trip;
+  f.authCache.clear(); f.verifyName = '改姓後の認証氏名';
+  const result = f.finish(trip.id);
+  assert.equal(result.ok, true);
+  assert.equal(result.data.trip.employeeName, '山田 太郎');
+  assert.equal(result.data.trip.completedByEmployeeName, '改姓後の認証氏名');
+  assert.equal(result.data.trip.completedDepartment, '管理G');
+  assert.equal(result.data.trip.recordedDriverName, '山田 太郎');
+  assert.equal(f.cell('運転者'), '山田 太郎');
+});
+
+test('different employee IDs record both people even when their names are identical', () => {
+  const f = fixture(); const trip = f.start().data.trip;
+  f.verifyName = '山田 太郎';
+  const result = f.finish(trip.id, {}, { kinjiro: { employeeId: '0002', token: 'same-name-other-person' } });
+  assert.equal(result.ok, true);
+  assert.equal(result.data.trip.recordedDriverName, '山田 太郎 ／ 山田 太郎');
+  assert.equal(f.cell('運転者'), '山田 太郎 ／ 山田 太郎');
+});
+
+test('handover finish receipts belong to the completing person and prevent a second completion', () => {
+  const f = fixture(); const start = f.start({}, { requestId: 'handover-start-receipt' });
+  const b = { requestId: 'handover-finish-receipt', kinjiro: { employeeId: '0002', token: 'person-b-device-token' } };
+  const c = { requestId: b.requestId, kinjiro: { employeeId: '0003', token: 'person-c-device-token' } };
+  const finished = f.finish(start.data.trip.id, {}, b);
+  assert.equal(finished.ok, true);
+  assert.deepEqual(f.finish(start.data.trip.id, {}, b), finished);
+  assert.equal(f.finish(start.data.trip.id, {}, c).error.code, 'EMPLOYEE_MISMATCH');
+  assert.equal(f.finish(start.data.trip.id, {}, { requestId: b.requestId }).error.code, 'EMPLOYEE_MISMATCH');
+  assert.equal(f.finish(start.data.trip.id, {}, { kinjiro: c.kinjiro }).error.code, 'TRIP_ALREADY_COMPLETED');
+  assert.equal(f.vehicle.getLastRow(), 2);
+  assert.equal(f.cell('運転者'), '山田 太郎 ／ 佐藤 花子');
+  assert.deepEqual(f.start({}, { requestId: 'handover-start-receipt' }), start);
+  assert.equal(f.start({}, { requestId: 'handover-start-receipt', kinjiro: b.kinjiro }).error.code, 'EMPLOYEE_MISMATCH');
+});
+
+test('interrupted handover completion preserves both names and its actor during recovery by another caller', () => {
+  const f = fixture(); const trip = f.start().data.trip;
+  const b = { requestId: 'pending-handover-finish', kinjiro: { employeeId: '0002', token: 'person-b-device-token' } };
+  f.fail = { sheet: '社用車一覧', row: 2, col: 1, after: true };
+  assert.equal(f.finish(trip.id, {}, b).error.code, 'INTERNAL_ERROR');
+  assert.equal(f.cell('運転者'), '山田 太郎 ／ 佐藤 花子');
+  const c = { requestId: b.requestId, kinjiro: { employeeId: '0003', token: 'person-c-device-token' } };
+  assert.equal(f.finish(trip.id, {}, c).error.code, 'EMPLOYEE_MISMATCH');
+  const retried = f.finish(trip.id, {}, b);
+  assert.equal(retried.ok, true);
+  assert.equal(retried.data.trip.completedByEmployeeId, '0002');
+  assert.equal(retried.data.trip.completedByEmployeeName, '佐藤 花子');
+  assert.equal(retried.data.trip.recordedDriverName, '山田 太郎 ／ 佐藤 花子');
+  assert.equal(f.cell('運転者'), '山田 太郎 ／ 佐藤 花子');
+  assert.equal(f.vehicle.getLastRow(), 2);
+  assert.equal(f.call('getTrip', { tripId: trip.id }).data.trip.completedByEmployeeId, '0002');
+});
+
+test('legacy finish receipts without completing-person metadata fall back to the starting employee', () => {
+  const f = fixture(); const trip = f.start().data.trip;
+  const opts = { requestId: 'legacy-finish-owner' };
+  assert.equal(f.finish(trip.id, {}, opts).ok, true);
+  const journal = f.ss.getSheetByName('_運転日報_リクエスト');
+  const row = journal.data.find(r => r[0] === opts.requestId);
+  const operation = JSON.parse(row[4]);
+  delete operation.trip.completedByEmployeeId; delete operation.trip.completedByEmployeeName;
+  delete operation.trip.completedDepartment;
+  row[4] = JSON.stringify(operation);
+  const response = JSON.parse(row[5]);
+  delete response.data.trip.completedByEmployeeId; delete response.data.trip.completedByEmployeeName; delete response.data.trip.recordedDriverName; delete response.data.trip.completedDepartment;
+  row[5] = JSON.stringify(response);
+  assert.deepEqual(f.finish(trip.id, {}, opts), response);
+  assert.equal(f.finish(trip.id, {}, { ...opts, kinjiro: { employeeId: '0002', token: 'other-person-replay' } }).error.code, 'EMPLOYEE_MISMATCH');
+});
+
+test('an explicitly selected completing department is validated without changing the starting department', () => {
+  const f = fixture(); const trip = f.start().data.trip;
+  assert.equal(Object.hasOwn(trip, 'completedDepartment'), false);
+  for (const department of [null, '', '未登録の部門', 100, {}]) {
+    const response = f.finish(trip.id, { department });
+    assert.equal(response.error.code, 'VALIDATION_ERROR');
+    assert.equal(response.error.message, '稼働部門を選択してください。');
+    assert.equal(f.cell('終了時間'), '');
+  }
+  const finished = f.finish(trip.id, { department: '建設2G' });
+  assert.equal(finished.ok, true);
+  assert.equal(finished.data.trip.department, '管理G');
+  assert.equal(finished.data.trip.completedDepartment, '建設2G');
+});
+
+test('completed legacy history without a completing department displays the starting department fallback', () => {
+  const f = fixture(); const trip = f.start().data.trip;
   assert.equal(f.finish(trip.id).ok, true);
+  const records = f.ss.getSheetByName('_運転日報_記録管理');
+  const stored = JSON.parse(records.data[1][3]); delete stored.completedDepartment;
+  records.data[1][3] = JSON.stringify(stored);
+  assert.equal(f.call('getTrip', { tripId: trip.id }).data.trip.completedDepartment, '管理G');
+  assert.equal(f.call('listHistory', { vehicleId: trip.vehicleId }).data.trips[0].completedDepartment, '管理G');
 });
 
 test('completed ledger timestamps keep latest distance and latest oil when visible rows are sorted', () => {

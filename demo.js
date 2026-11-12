@@ -8,11 +8,17 @@ function requireValue(ok, message, code='VALIDATION_ERROR') { if(!ok) throw fail
 function reading(value) { if(value===null || value==='' || value===undefined) return null; const n=Number(value); requireValue(Number.isFinite(n)&&n>=0,'測定値を確認してください。'); return n; }
 function dateOnly(date) { return new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo'}).format(date); }
 
-export function createDemoApi(env=globalThis, {clock=()=>new Date()}={}) {
+export function createDemoApi(env=globalThis, {clock=()=>new Date(),employee=DEMO_EMPLOYEE}={}) {
+  const authenticatedEmployee=Object.freeze({id:String(employee?.id??'').trim(),name:String(employee?.name??'').trim()});
+  requireValue(authenticatedEmployee.id&&authenticatedEmployee.name,'キンジロー君から開き直してください。','UNAUTHORIZED');
   const storageKey='drivelog.demo.v1';
   let state={trips:[],receipts:[],oil:{}};
-  try { const saved=JSON.parse(env.localStorage?.getItem(storageKey)||'null'); if(saved&&Array.isArray(saved.trips)&&Array.isArray(saved.receipts)) state={...saved,oil:saved.oil&&typeof saved.oil==='object'?saved.oil:{}}; } catch { /* use clean demo */ }
-  const persist=()=>{try{env.localStorage?.setItem(storageKey,JSON.stringify(state));}catch{/* memory-only preview */}};
+  let storageAvailable=true;
+  const refresh=()=>{if(!storageAvailable)return;try { const saved=JSON.parse(env.localStorage?.getItem(storageKey)||'null'); if(saved&&Array.isArray(saved.trips)&&Array.isArray(saved.receipts)) state={...saved,oil:saved.oil&&typeof saved.oil==='object'?saved.oil:{}}; } catch { storageAvailable=false; }};
+  refresh();
+  const publicTrip=trip=>{const value=copy(trip);value.recordedDriverName=trip.employeeName+(trip.completedByEmployeeId&&String(trip.completedByEmployeeId)!==String(trip.employeeId)?' ／ '+trip.completedByEmployeeName:'');if(trip.status==='completed')value.completedDepartment=trip.completedDepartment||trip.department;return value;};
+  const publicResult=result=>{const value=copy(result);if(value.trip)value.trip=publicTrip(value.trip);return value;};
+  const persist=()=>{try{env.localStorage?.setItem(storageKey,JSON.stringify(state));}catch{storageAvailable=false;}};
   const now=()=>new Date(clock());
   const seedNow=now();
   const vehicles=Array.from({length:48},(_,i)=>{
@@ -37,23 +43,30 @@ export function createDemoApi(env=globalThis, {clock=()=>new Date()}={}) {
     const due=new Date(vehicle.inspectionDue+'T00:00:00+09:00');
     const limit=new Date(now());limit.setMonth(limit.getMonth()+3);
     if(due<=limit) warnings.push({id:'inspection-'+id,type:'inspection',level:due<now()?'danger':'warning',title:due<now()?'車検満了日を過ぎています':'車検満了日が近づいています',message:'車検満了日：'+vehicle.inspectionDue});
-    return {vehicle,activeTrip:activeTrip?copy(activeTrip):null,oil,warnings,startOdometer};
+    return {vehicle,activeTrip:activeTrip?publicTrip(activeTrip):null,oil,warnings,startOdometer};
   };
   const mutation=(action,payload,id,work)=>{
+    refresh();
     requireValue(typeof id==='string'&&id.length>0,'保存内容を確認できません。','VALIDATION_ERROR');
     const fingerprint=JSON.stringify({action,payload});
     const old=state.receipts.find(r=>r.id===id);
-    if(old){requireValue(old.fingerprint===fingerprint,'同じ送信番号で内容が変更されています。','REQUEST_ID_REUSED');return copy(old.result);}
+    if(old){
+      requireValue(old.fingerprint===fingerprint,'同じ送信番号で内容が変更されています。','REQUEST_ID_REUSED');
+      const owner=old.ownerEmployeeId||(action==='finishTrip'?old.result?.trip?.completedByEmployeeId||old.result?.trip?.employeeId:old.result?.trip?.employeeId);
+      requireValue(String(owner)===authenticatedEmployee.id,'キンジロー君の社員番号と運転者が一致しません。','EMPLOYEE_MISMATCH');
+      return publicResult(old.result);
+    }
     const next=copy(state); const result=work(next);
-    next.receipts.push({id,fingerprint,result:copy(result)}); next.receipts=next.receipts.slice(-200);state=next;persist();return copy(result);
+    const response=publicResult(result);
+    next.receipts.push({id,fingerprint,ownerEmployeeId:authenticatedEmployee.id,result:copy(response)}); next.receipts=next.receipts.slice(-200);state=next;persist();return copy(response);
   };
   return {
-    launchContext:{employeeId:DEMO_EMPLOYEE.id,department:''},
-    async bootstrap(){return {employee:copy(DEMO_EMPLOYEE),departments:[...DEPARTMENTS],vehicles:vehicles.map(v=>contextFor(v.id).vehicle),serverTime:now().toISOString()};},
-    async vehicleContext(id){return contextFor(id);},
+    launchContext:{employeeId:authenticatedEmployee.id,department:''},
+    async bootstrap(){refresh();return {employee:copy(authenticatedEmployee),departments:[...DEPARTMENTS],vehicles:vehicles.map(v=>contextFor(v.id).vehicle),serverTime:now().toISOString()};},
+    async vehicleContext(id){refresh();return contextFor(id);},
     async startTrip(payload,id){return mutation('startTrip',payload,id,next=>{
-      const ctx=contextFor(payload.vehicleId,next); const employee=DEMO_EMPLOYEE;
-      requireValue(payload.employeeId===undefined||payload.employeeId===null||payload.employeeId===''||String(payload.employeeId)===employee.id,'キンジロー君で認証された運転者と一致しません。','EMPLOYEE_MISMATCH');
+      const ctx=contextFor(payload.vehicleId,next); const employee=authenticatedEmployee;
+      requireValue(payload.employeeId===undefined||payload.employeeId===null||payload.employeeId===''||String(payload.employeeId)===employee.id,'キンジロー君の社員番号と運転者が一致しません。','EMPLOYEE_MISMATCH');
       requireValue(DEPARTMENTS.includes(payload.department),'稼働部門を選択してください。');
       requireValue(ctx.startOdometer!==null,'出発メーターが未登録です。','INITIAL_ODOMETER_REQUIRED');
       requireValue(!ctx.activeTrip,'この車両には運転中の記録があります。','VEHICLE_IN_USE');
@@ -66,15 +79,17 @@ export function createDemoApi(env=globalThis, {clock=()=>new Date()}={}) {
     async finishTrip(payload,id){return mutation('finishTrip',payload,id,next=>{
       const trip=next.trips.find(t=>t.id===payload.tripId);requireValue(trip,'運転中の記録が見つかりません。','TRIP_NOT_FOUND');
       requireValue(trip.status==='active','この記録は完了済みです。','TRIP_ALREADY_COMPLETED');
+      const completedDepartment=payload.department===undefined?trip.department:payload.department;
+      if(payload.department!==undefined)requireValue(DEPARTMENTS.includes(completedDepartment),'稼働部門を選択してください。');
       const end=Number(payload.endOdometer);requireValue(Number.isFinite(end)&&end>=trip.startOdometer&&payload.endOdometer!==''&&payload.endOdometer!==null,'終了メーターは出発メーター以上の値を入力してください。','ODOMETER_DECREASE');
       requireValue(typeof payload.destination==='string'&&payload.destination.trim(),'行き先を入力してください。');
       const liters=payload.refueled?Number(payload.fuelLiters):null;requireValue(!payload.refueled||(Number.isFinite(liters)&&liters>0),'給油量を入力してください。','VALIDATION_ERROR');
       requireValue(['有','無'].includes(payload.after?.presence),'酒気帯びの有無を選択してください。');
-      Object.assign(trip,{destination:payload.destination.trim(),completedAt:now().toISOString(),endOdometer:end,distance:Math.round((end-trip.startOdometer)*10)/10,refueled:payload.refueled===true,fuelLiters:liters,oilChanged:payload.oilChanged===true,notes:String(payload.notes||''),after:{confirmed:payload.after.confirmed===true,reading:reading(payload.after.reading),presence:payload.after.presence},status:'completed'});
+      Object.assign(trip,{completedDepartment,completedByEmployeeId:authenticatedEmployee.id,completedByEmployeeName:authenticatedEmployee.name,destination:payload.destination.trim(),completedAt:now().toISOString(),endOdometer:end,distance:Math.round((end-trip.startOdometer)*10)/10,refueled:payload.refueled===true,fuelLiters:liters,oilChanged:payload.oilChanged===true,notes:String(payload.notes||''),after:{confirmed:payload.after.confirmed===true,reading:reading(payload.after.reading),presence:payload.after.presence},status:'completed'});
       if(trip.oilChanged) next.oil[trip.vehicleId]=end;
       return {trip,rowNumber:next.trips.filter(t=>t.vehicleId===trip.vehicleId).length+1,sheetUrl:null};
     });},
-    async getTrip(id){const trip=state.trips.find(t=>t.id===id);requireValue(trip,'記録が見つかりません。','TRIP_NOT_FOUND');return {trip:copy(trip)};},
-    async listHistory(id){vehicleFor(id);return {trips:copy(state.trips.filter(t=>t.vehicleId===id).slice().reverse())};}
+    async getTrip(id){refresh();const trip=state.trips.find(t=>t.id===id);requireValue(trip,'記録が見つかりません。','TRIP_NOT_FOUND');return {trip:publicTrip(trip)};},
+    async listHistory(id){refresh();vehicleFor(id);return {trips:state.trips.filter(t=>t.vehicleId===id).slice().reverse().map(publicTrip)};}
   };
 }

@@ -95,7 +95,10 @@ function processRequest_(request) {
           if (previous.values[1] !== request.action || previous.values[2] !== fingerprint) {
             fail_('REQUEST_ID_REUSED', '同じ通信IDに異なる操作が指定されています。');
           }
-          assertSubject_(auth, JSON.parse(previous.values[4]).trip.employeeId);
+          var receiptTrip = JSON.parse(previous.values[4]).trip;
+          var receiptOwner = request.action === 'finishTrip' && !blank_(receiptTrip.completedByEmployeeId)
+            ? receiptTrip.completedByEmployeeId : receiptTrip.employeeId;
+          assertSubject_(auth, receiptOwner);
           return JSON.parse(previous.values[5]);
         }
       }
@@ -213,9 +216,14 @@ function startTrip_(ss, store, request, auth, fingerprint) {
 
 function finishTrip_(ss, store, request, auth, fingerprint) {
   var p = request.payload || {};
+  var completedBy = authenticatedEmployee_(auth);
   var trip = requireTrip_(store, p.tripId);
-  assertSubject_(auth, trip.employeeId);
   if (trip.status !== 'active') fail_('TRIP_ALREADY_COMPLETED', 'この運転は終了済みです。履歴を確認してください。');
+  var completedDepartment = trip.department;
+  if (p.department !== undefined) {
+    if (DRIVE_LOG_.departments.indexOf(p.department) < 0) fail_('VALIDATION_ERROR', '稼働部門を選択してください。');
+    completedDepartment = p.department;
+  }
   var end = numeric_(p.endOdometer, '終了メーター', false);
   if (end < trip.startOdometer) fail_('ODOMETER_DECREASE', '終了メーターは出発メーター以上にしてください。');
   var destination = text_(p.destination, '行先', 300, true);
@@ -241,6 +249,9 @@ function finishTrip_(ss, store, request, auth, fingerprint) {
   trip.distance = Math.round((end - trip.startOdometer) * 1000000) / 1000000;
   trip.after = after; trip.destination = destination; trip.fuelLiters = fuel;
   trip.oilChanged = p.oilChanged; trip.notes = notes; trip.finishRequestId = request.requestId;
+  trip.completedByEmployeeId = completedBy.id; trip.completedByEmployeeName = completedBy.name;
+  trip.completedDepartment = completedDepartment;
+  fields.employee = safeCellText_(recordedDriverName_(trip));
   fields.endTime = trip.completedAt.slice(11, 16); fields.destination = safeCellText_(destination);
   fields.endOdometer = end; fields.distance = trip.distance; fields.fuel = fuel === null ? '' : fuel;
   fields.oil = p.oilChanged ? '実施' : ''; fields.notes = safeCellText_(notes);
@@ -516,9 +527,18 @@ function publicVehicle_(v) {
 function publicTrip_(t) {
   if (!t) return null;
   var result = {};
-  ['id', 'vehicleId', 'vehicleNumber', 'model', 'modelKey', 'employeeId', 'employeeName', 'department', 'startedAt', 'startOdometer', 'before', 'status', 'completedAt', 'endOdometer', 'distance', 'after', 'destination', 'fuelLiters', 'oilChanged', 'notes']
+  ['id', 'vehicleId', 'vehicleNumber', 'model', 'modelKey', 'employeeId', 'employeeName', 'department', 'startedAt', 'startOdometer', 'before', 'status', 'completedAt', 'endOdometer', 'distance', 'after', 'destination', 'fuelLiters', 'oilChanged', 'notes', 'completedByEmployeeId', 'completedByEmployeeName', 'completedDepartment']
     .forEach(function (key) { if (t[key] !== undefined) result[key] = t[key]; });
+  if (t.status === 'completed' && result.completedDepartment === undefined) result.completedDepartment = t.department;
+  result.recordedDriverName = recordedDriverName_(t);
   return result;
+}
+
+function recordedDriverName_(trip) {
+  if (!blank_(trip.completedByEmployeeId) && normalizeId_(trip.completedByEmployeeId) !== normalizeId_(trip.employeeId) && validEmployeeName_(trip.completedByEmployeeName)) {
+    return trip.employeeName + ' ／ ' + trip.completedByEmployeeName;
+  }
+  return trip.employeeName;
 }
 
 function oilState_(fuelType, baseline, current) {
