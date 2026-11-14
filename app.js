@@ -453,8 +453,13 @@ async function loadVehicle({ warnings = true } = {}) {
   finally { if (generation === contextGeneration) { state.contextLoading = false; renderVehicle(); renderControls(); } }
 }
 function showWarnings(warnings) {
+  const visibleWarnings = warnings.filter(warning => warning.type !== 'inspection');
   $('warnings-content').replaceChildren();
-  warnings.forEach(warning => {
+  if (!visibleWarnings.length) {
+    if ($('warnings-dialog').open) $('warnings-dialog').close();
+    return;
+  }
+  visibleWarnings.forEach(warning => {
     const card = document.createElement('article'); card.className = 'warning-card';
     card.classList.toggle('is-critical', ['critical', 'danger', 'error'].includes(warning.level));
     const title = document.createElement('h3'); title.textContent = warning.title || '車両のお知らせ';
