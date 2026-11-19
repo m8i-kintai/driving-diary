@@ -6,7 +6,7 @@ var FLEET_ADMIN_ = Object.freeze({
   journal: '_運転日報_車両管理',
   panel: '車両管理ツール', panelMetadata: 'DRIVE_FLEET_PANEL', cleanupMetadata: 'DRIVE_FLEET_LEGACY_CLEANUP',
   inputs: { renameVehicle: [8, 3], renameNumber: [9, 3], stopVehicle: [8, 7], restoreVehicle: [17, 3],
-    number: [17, 7], model: [18, 7], fuel: [19, 7], inspection: [20, 7], initialOil: [21, 7], initialOdometer: [22, 7], transmission: [23, 7] },
+    number: [17, 7], model: [18, 7], fuel: [19, 7], inspection: [20, 7], initialOil: [21, 7], initialOdometer: [22, 7] },
   legacyInputs: { renameVehicle: [5, 11], renameNumber: [6, 11], stopVehicle: [10, 11], restoreVehicle: [14, 11],
     number: [18, 11], model: [19, 11], fuel: [20, 11], inspection: [21, 11], initialOil: [22, 11], initialOdometer: [23, 11], transmission: [24, 11] },
   headers: ['requestId', 'adminEmail', 'fingerprint', 'state', 'operationJson', 'responseJson', 'createdAt'],
@@ -145,7 +145,7 @@ function fleetPlan_(ss, request, email) {
   if (request.operation === 'add') {
     if (fleetPendingVehicleIds_(ss).length) fail_('VEHICLE_PENDING', '保存途中の車両管理があります。先に保存結果を確認してください。');
     var number = fleetNumber_(p.number);
-    if (FLEET_ADMIN_.models.indexOf(p.model) < 0 || ['ガソリン', '軽油'].indexOf(p.fuelType) < 0 || typeof p.requiresClutch !== 'boolean') fail_('VALIDATION_ERROR', '車種・燃料・変速機を確認してください。');
+    if (FLEET_ADMIN_.models.indexOf(p.model) < 0 || ['ガソリン', '軽油'].indexOf(p.fuelType) < 0) fail_('VALIDATION_ERROR', '車種・燃料を確認してください。');
     var inspection = dateValue_(p.inspectionDue), initialOil = numeric_(p.initialOil, '初回オイル交換距離', true), initial = numeric_(p.initialOdometer, '初回確認時の距離', false);
     fleetAssertNumberFree_(ss, vehicles, number, null);
     fleetValidateTemplate_(ss.getSheetByName(DRIVE_LOG_.template));
@@ -154,9 +154,9 @@ function fleetPlan_(ss, request, email) {
       temporarySheetName: '_車両登録_' + request.requestId.toLowerCase(), sheetName: number,
       templateId: ss.getSheetByName(DRIVE_LOG_.template).getSheetId(), before: null,
       fields: { number: number, model: p.model, fuel: p.fuelType, inspection: inspection,
-        initialOil: initialOil, initialOdometer: initial, currentOdometer: initial, stableId: request.requestId.toLowerCase(), usage: '使用中', transmission: p.requiresClutch ? 'MT' : 'AT' } });
+        initialOil: initialOil, initialOdometer: initial, currentOdometer: initial, stableId: request.requestId.toLowerCase(), usage: '使用中', transmission: 'AT' } });
     Object.assign(summary, { vehicleId: '', previousNumber: '', number: number, active: true, model: p.model, fuelType: p.fuelType,
-      inspectionDue: inspection, initialOil: initialOil, initialOdometer: initial, currentOdometer: initial, requiresClutch: p.requiresClutch, sheetUrl: '' });
+      inspectionDue: inspection, initialOil: initialOil, initialOdometer: initial, currentOdometer: initial, requiresClutch: false, sheetUrl: '' });
   } else {
     vehicle = vehicles.filter(function (v) { return v.id === normalizeId_(p.vehicleId); })[0];
     if (!vehicle) fail_('VEHICLE_NOT_FOUND', '車両を選び直してください。');
@@ -327,18 +327,18 @@ function installFleetManagement_(adminUrl) {
     if (fleetPendingVehicleIds_(ss).length) fail_('VEHICLE_PENDING', '保存途中の管理操作があります。');
     vehicles.forEach(function (v) { fleetAssertVehicleIdle_(ss, v.id, true); resolveVehicleSheet_(ss, v); });
     var table = table_(master, MASTER_SCHEMA_), optional = headerMap_(table.headers, FLEET_ADMIN_.optional, false);
-    var preferred = { stableId: 8, usage: 16, transmission: 17 }, next = Math.max(table.width, 18) + 1;
-    ['stableId', 'usage', 'transmission'].forEach(function (key) {
+    var preferred = { usage: 8, stableId: 9 }, next = Math.max(table.width, fleetLegacyPanelInstalled_(master) ? 16 : 10);
+    ['usage', 'stableId'].forEach(function (key) {
       if (optional[key] == null) {
-        var column = preferred[key];
-        if (!blank_(master.getRange(table.headerRow, column + 1).getValue())) column = next++ - 1;
+        var column = preferred[key], proposed = master.getRange(table.headerRow, column + 1, Math.max(master.getLastRow() - table.headerRow + 1, 1), 1);
+        var occupied = proposed.getValues(), formulas = proposed.getFormulas();
+        if (occupied.some(function (row, index) { return !blank_(row[0]) || !!formulas[index][0]; })) column = next++;
         optional[key] = column; master.getRange(table.headerRow, column + 1).setValue(FLEET_ADMIN_.optional[key][0]);
       }
     });
     vehicles.forEach(function (v) {
       master.getRange(v.masterRow, optional.stableId + 1).setValue(v.id);
       master.getRange(v.masterRow, optional.usage + 1).setValue(v.active ? '使用中' : '使用停止');
-      if (blank_(master.getRange(v.masterRow, optional.transmission + 1).getValue())) master.getRange(v.masterRow, optional.transmission + 1).setValue(v.requiresClutch ? 'MT' : 'AT');
       master.getRange(v.masterRow, table.map.link + 1).setValue('=HYPERLINK("' + sheetUrl_(ss, resolveVehicleSheet_(ss, v).getSheetId()) + '","運転日リンク")');
     });
     fleetJournal_(ss, true);
@@ -397,7 +397,7 @@ function fleetLegacyLabels_() {
 function fleetManagementLabels_() {
   return { '2:2': FLEET_ADMIN_.panel, '5:2': '車番を変更', '5:6': '運用から外す', '14:2': '運用に戻す', '14:6': '車両を追加',
     '8:2': '対象車両', '9:2': '新しい車番', '8:6': '対象車両', '17:2': '対象車両', '17:6': '車番', '18:6': '車種', '19:6': '燃料',
-    '20:6': '車検満了日（任意）', '21:6': '前回オイル交換時\nの距離 km（任意）', '22:6': '初回距離 km', '23:6': '変速機' };
+    '20:6': '車検満了日（任意）', '21:6': '前回オイル交換時\nの距離 km（任意）', '22:6': '初回距離 km' };
 }
 
 function fleetManagementButtons_() {
@@ -414,7 +414,10 @@ function fleetPanelLinkMatches_(formula, operation, label) {
 
 function fleetAssertPanelArea_(master) {
   if (fleetLegacyPanelInstalled_(master)) { fleetValidateLegacyPanel_(master); return; }
-  if (master.getRange(1, 10, 25, 7).getValues().some(function (row) { return row.some(function (value) { return !blank_(value); }); })) {
+  var table = table_(master, MASTER_SCHEMA_), optional = headerMap_(table.headers, FLEET_ADMIN_.optional, false), ownedColumns = {};
+  ['stableId', 'usage'].forEach(function (key) { if (optional[key] != null) ownedColumns[optional[key]] = true; });
+  var range = master.getRange(1, 10, 25, 7), values = range.getValues(), formulas = range.getFormulas();
+  if (values.some(function (row, index) { return row.some(function (value, column) { return !ownedColumns[column + 9] && (!blank_(value) || !!formulas[index][column]); }); })) {
     fail_('PANEL_AREA_CONFLICT', '社用車一覧のJ〜P列に既存データがあります。既存データを保持して停止しました。');
   }
 }
@@ -425,7 +428,10 @@ function fleetValidateLegacyPanel_(master) {
   var range = master.getRange(1, 10, 25, 7), values = range.getValues(), formulas = range.getFormulas();
   for (var row = 0; row < 25; row++) for (var col = 0; col < 7; col++) {
     var key = (row + 1) + ':' + (col + 10), value = values[row][col], formula = formulas[row][col];
-    if (inputs[key] && !formula) continue;
+    if (inputs[key] && !formula) {
+      if (key === FLEET_ADMIN_.legacyInputs.transmission.join(':') && !blank_(value) && ['AT', 'MT'].indexOf(normalizeId_(value).toUpperCase()) < 0) fail_('PANEL_AREA_CONFLICT', '旧変速機欄に想定外の値があります。入力を保持して停止しました。');
+      continue;
+    }
     if (buttons[key] && fleetPanelLinkMatches_(formula, buttons[key], '内容を確認・実行')) continue;
     if (!formula && labels[key] && labels[key].indexOf(String(value)) >= 0) continue;
     if (!blank_(value) || formula) fail_('PANEL_AREA_CONFLICT', '旧管理表に想定外の値があります。旧表を保持して停止しました。');
@@ -452,9 +458,22 @@ function fleetAssertManagementSheet_(sheet) {
   for (var row = 0; row < 27; row++) for (var col = 0; col < 9; col++) {
     var key = (row + 1) + ':' + (col + 1), value = values[row][col], formula = formulas[row][col];
     if (!formula && (inputs[key] || labels[key] === value)) continue;
+    if (!formula && key === '23:6' && value === '変速機') continue;
+    if (!formula && key === '23:7' && (blank_(value) || ['AT', 'MT'].indexOf(normalizeId_(value).toUpperCase()) >= 0)) continue;
     if (buttons[key] && fleetPanelLinkMatches_(formula, buttons[key].operation, buttons[key].label)) continue;
     if (!blank_(value) || formula) fail_('PANEL_AREA_CONFLICT', '管理タブに想定外の値があります。既存入力を保持して停止しました。');
   }
+}
+
+function fleetRemoveTransmissionInput_(sheet) {
+  if (!sheet) return false;
+  fleetAssertManagementSheet_(sheet);
+  var range = sheet.getRange(23, 6, 1, 2), values = range.getValues()[0], formulas = range.getFormulas()[0];
+  if (formulas.some(function (value) { return !!value; }) || !blank_(values[0]) && values[0] !== '変速機' || !blank_(values[1]) && ['AT', 'MT'].indexOf(normalizeId_(values[1]).toUpperCase()) < 0) {
+    fail_('PANEL_AREA_CONFLICT', '旧変速機欄に想定外の値があります。入力を保持して停止しました。');
+  }
+  range.clearContent().clearFormat().clearDataValidations();
+  return true;
 }
 
 function fleetPanelValues_(sheet, map) {
@@ -476,7 +495,7 @@ function fleetMergedPanelValues_(ss, sheet) {
   fleetValidateLegacyPanel_(master);
   var legacy = fleetPanelValues_(master, FLEET_ADMIN_.legacyInputs);
   Object.keys(legacy).forEach(function (key) {
-    if (blank_(legacy[key])) return;
+    if (key === 'transmission' || blank_(legacy[key])) return;
     if (!blank_(values[key]) && !fleetPanelSameValue_(key, values[key], legacy[key])) fail_('PANEL_AREA_CONFLICT', '新旧の管理表に異なる入力があります。両方の入力を保持して停止しました。');
     if (blank_(values[key])) values[key] = legacy[key];
   });
@@ -487,6 +506,7 @@ function fleetInstallPanel_(ss, url) {
   var sheet = ss.getSheetByName(FLEET_ADMIN_.panel);
   fleetAssertManagementSheet_(sheet);
   var values = fleetMergedPanelValues_(ss, sheet);
+  if (sheet) fleetRemoveTransmissionInput_(sheet);
   if (!sheet) sheet = ss.insertSheet(FLEET_ADMIN_.panel, ss.getSheetByName(DRIVE_LOG_.master).getIndex());
   sheet.getRange(2, 2).setValue(FLEET_ADMIN_.panel); // An interrupted stage can be safely resumed.
   sheet.getRange(1, 1, 27, 9).breakApart().clearFormat().setBackground('#faf9f6').setFontFamily('Arial').setFontSize(10).setFontColor('#253247').setWrap(true).setVerticalAlignment('middle');
@@ -540,7 +560,7 @@ function fleetRefreshPanel_(ss, onlySheet) {
     }
     dropdown('renameVehicle', active); dropdown('stopVehicle', active);
     dropdown('restoreVehicle', vehicles.filter(function (v) { return !v.active; }).map(function (v) { return v.number; }));
-    dropdown('model', FLEET_ADMIN_.models); dropdown('fuel', ['ガソリン', '軽油']); dropdown('transmission', ['AT', 'MT']);
+    dropdown('model', FLEET_ADMIN_.models); dropdown('fuel', ['ガソリン', '軽油']);
   });
 }
 
@@ -554,12 +574,11 @@ function fleetReadPanel_(ss, vehicles) {
   if (rename) result.rename = { vehicleId: rename.id, number: String(values.renameNumber || '') };
   if (stop) result.stop = { vehicleId: stop.id, active: false };
   if (restore) result.restore = { vehicleId: restore.id, active: true };
-  if (['number', 'model', 'fuel', 'inspection', 'initialOil', 'initialOdometer', 'transmission'].some(function (key) { return !blank_(values[key]); })) {
+  if (['number', 'model', 'fuel', 'inspection', 'initialOil', 'initialOdometer'].some(function (key) { return !blank_(values[key]); })) {
     var inspection = values.inspection;
     try { inspection = dateValue_(inspection); } catch (_) { inspection = String(inspection || ''); }
     result.add = { number: String(values.number || ''), model: String(values.model || ''), fuelType: String(values.fuel || ''), inspectionDue: inspection,
-      initialOil: blank_(values.initialOil) ? null : values.initialOil, initialOdometer: blank_(values.initialOdometer) ? null : values.initialOdometer,
-      requiresClutch: normalizeId_(values.transmission).toUpperCase() === 'MT' };
+      initialOil: blank_(values.initialOil) ? null : values.initialOil, initialOdometer: blank_(values.initialOdometer) ? null : values.initialOdometer };
   }
   return result;
 }

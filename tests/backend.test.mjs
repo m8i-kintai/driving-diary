@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 
 const source = fs.readFileSync(new URL('../gas/Code.gs', import.meta.url), 'utf8');
 const fleetSource = fs.readFileSync(new URL('../gas/FleetAdmin.gs', import.meta.url), 'utf8');
+const metadataSource = fs.readFileSync(new URL('../gas/FleetMetadata.gs', import.meta.url), 'utf8');
 const ACCESS_KEY = 'test-only-key-never-use-in-production';
 const HEADERS = ['日付', '曜日', '運転前車両点検', '出発時間', '終了時間', '運転者', '行先', '出発メーター(km)', '終了メーター(km)', '走行距離(km)', '給油量(L)', 'オイル交換', '備考・不具合', '運転前対面確認者', '運転前検知器結果(mg/L)', '運転後対面確認者', '運転後検知器結果(mg/L)', '酒気帯び(有/無)', '指示事項'];
 const MASTER = ['現在の距離', '車種', '車検満了日', '車番', '運転日誌リンク', '初回確認時の距離', '種別', '初回確認時のオイル交換実施距離', '変速機'];
@@ -32,6 +33,19 @@ function fixture(options = {}) {
       }));
     }
     getValue() { return this.getValues()[0][0]; }
+    getRow() { return this.r; }
+    getColumn() { return this.c; }
+    getNumRows() { return this.rows; }
+    getNumColumns() { return this.cols; }
+    protect() {
+      const range = this;
+      const protection = { description: '', warningOnly: false, getRange: () => range,
+        setDescription(value) { this.description = value; return this; }, getDescription() { return this.description; },
+        setWarningOnly(value) { this.warningOnly = value; return this; }, isWarningOnly() { return this.warningOnly; } };
+      protection.setRange = next => { protection.getRange = () => next; return protection; };
+      this.sheet.protections.push(protection);
+      return protection;
+    }
     canEdit() { return env.canEdit; }
     getDisplayValues() { return this.getValues().map(row => row.map(v => String(v))); }
     getFormulas() { return Array.from({ length: this.rows }, (_, i) => Array.from({ length: this.cols }, (_, j) => { const v = this.raw(this.r + i, this.c + j); return typeof v === 'string' && v.startsWith('=') ? v : ''; })); }
@@ -49,6 +63,8 @@ function fixture(options = {}) {
     }
     setNumberFormat(format) { this.sheet.formats.set(`${this.r}:${this.c}`, format); return this; }
     getNumberFormat() { return this.sheet.formats.get(`${this.r}:${this.c}`) ?? 'General'; }
+    setNote(note) { this.sheet.notes.set(`${this.r}:${this.c}`, note); return this; }
+    getNote() { return this.sheet.notes.get(`${this.r}:${this.c}`) ?? ''; }
     setDataValidation(rule) { this.sheet.validations.set(`${this.r}:${this.c}`, rule); return this; }
     clearDataValidations() {
       for (let i = 0; i < this.rows; i++) for (let j = 0; j < this.cols; j++) this.sheet.validations.delete(`${this.r + i}:${this.c + j}`);
@@ -78,7 +94,7 @@ function fixture(options = {}) {
     setHorizontalAlignment() { return this; }
   }
   class Sheet {
-    constructor(name, id, data = []) { Object.assign(this, { name, id, data: data.map(r => [...r]), hidden: false, formats: new Map(), validations: new Map(), metadata: [], columnWidths: new Map() }); env.sheets.push(this); }
+    constructor(name, id, data = []) { Object.assign(this, { name, id, data: data.map(r => [...r]), hidden: false, formats: new Map(), validations: new Map(), notes: new Map(), metadata: [], columnWidths: new Map(), protections: [] }); env.sheets.push(this); }
     getName() { return this.name; }
     setName(name) {
       if (env.sheets.some(sheet => sheet !== this && sheet.name === name)) throw new Error('Duplicate sheet name');
@@ -91,7 +107,26 @@ function fixture(options = {}) {
     getParent() { return env.ss; }
     setColumnWidth(column, width) { this.columnWidths.set(column, width); return this; }
     getColumnWidth(column) { return this.columnWidths.get(column) ?? 100; }
+    getMaxRows() { return Math.max(this.data.length, 1000); }
+    moveColumns(range, destinationIndex) {
+      assert.equal(range.sheet, this);
+      const first = range.getColumn() - 1, count = range.getNumColumns();
+      let target = destinationIndex - 1;
+      if (first < target) target -= count;
+      const width = Math.max(this.getLastColumn(), first + count, destinationIndex);
+      const order = Array.from({ length: width }, (_, index) => index);
+      const moved = order.splice(first, count); order.splice(target, 0, ...moved);
+      this.data = this.data.map(row => order.map(index => row[index] ?? ''));
+      for (const name of ['formats', 'validations', 'notes']) this[name] = new Map([...this[name]].map(([key, value]) => {
+        const [row, column] = key.split(':').map(Number); return [`${row}:${order.indexOf(column - 1) + 1}`, value];
+      }));
+      this.columnWidths = new Map([...this.columnWidths].map(([column, value]) => [order.indexOf(column - 1) + 1, value]));
+      env.columnMoves ??= []; env.columnMoves.push({ sheet: this.name, first: first + 1, count, destinationIndex });
+      if (env.failMove) { env.failMove = false; throw new Error('Simulated lost column-move acknowledgement'); }
+      return this;
+    }
     getDeveloperMetadata() { return this.metadata; }
+    getProtections(type) { assert.equal(type, 'RANGE'); return this.protections; }
     addDeveloperMetadata(key, value) {
       const metadata = { getKey: () => key, getValue: () => value, setValue(next) { value = next; return this; } };
       this.metadata.push(metadata);
@@ -132,7 +167,7 @@ function fixture(options = {}) {
   env.context = vm.createContext({
     Date: FixedDate,
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => env.props[key] ?? null }) },
-    SpreadsheetApp: { openById: id => { assert.equal(id, 'test-workbook'); return env.ss; }, flush: () => {}, newDataValidation: () => {
+    SpreadsheetApp: { ProtectionType: { RANGE: 'RANGE' }, openById: id => { assert.equal(id, 'test-workbook'); return env.ss; }, flush: () => {}, newDataValidation: () => {
       const rule = {};
       return { requireValueInList(values) { rule.values = [...values]; return this; }, setAllowInvalid(allow) { rule.allowInvalid = allow; return this; }, build() { return rule; } };
     } },
@@ -156,6 +191,7 @@ function fixture(options = {}) {
   });
   vm.runInContext(source, env.context, { filename: 'Code.gs' });
   vm.runInContext(fleetSource, env.context, { filename: 'FleetAdmin.gs' });
+  vm.runInContext(metadataSource, env.context, { filename: 'FleetMetadata.gs' });
   env.call = (action, payload = {}, opts = {}) => {
     const kinjiro = own(opts, 'kinjiro', { employeeId: '0001', token: 'default-test-device-token' });
     return plain(env.context.processRequest_({ version: 1, action, payload, requestId: opts.requestId ?? `request-${++env.requestCount}`, accessKey: own(opts, 'accessKey', ''), ...(kinjiro ? { kinjiro } : {}) }));
@@ -974,6 +1010,15 @@ function applyFleet(f, operation, payload, opts = {}) {
 const NEW_CAR = { number: '架空500あ 22', model: 'プロボックス', fuelType: 'ガソリン', inspectionDue: '2028-02-29', initialOil: null, initialOdometer: 0, requiresClutch: false };
 
 function legacyFleetPanel(f, inputs = {}) {
+  const headers = f.master.data[0], previousId = headers.indexOf('車両ID'), previousUsage = headers.indexOf('使用状況');
+  const ids = f.master.data.map(row => previousId >= 0 ? row[previousId] : ''), usages = f.master.data.map(row => previousUsage >= 0 ? row[previousUsage] : '');
+  for (const column of [previousId, previousUsage]) if (column >= 9 && column <= 15) f.master.data.forEach(row => { row[column] = ''; });
+  headers[18] = '車両ID'; headers[16] = '使用状況';
+  f.master.data.slice(1).forEach((row, index) => {
+    if (!row[MASTER.indexOf('車番')]) return;
+    row[18] = ids[index + 1] || String(row[MASTER.indexOf('車番')]).replace(/\s/g, '');
+    row[16] = usages[index + 1] || '使用中';
+  });
   const url = 'https://script.google.com/macros/s/test-admin-deployment/exec?view=fleet';
   const labels = { 1: '社用車 管理ツール', 2: '入力後、右の「内容を確認・実行」を押してください', 3: '運転中・保存中の車両は変更できません',
     4: '番号変更', 5: '対象車両', 6: '新しい車番', 9: '運用から外す', 10: '対象車両', 13: '運用に戻す', 14: '対象車両',
@@ -985,6 +1030,145 @@ function legacyFleetPanel(f, inputs = {}) {
   Object.entries(inputs).forEach(([row, value]) => f.master.getRange(Number(row), 11).setValue(value));
   return f.master.getRange(1, 10, 25, 7).getValues();
 }
+
+function compactFixture(options = {}) {
+  const f = fixture();
+  const stoppedSheet = f.ss.insertSheet('停止車の日報'); stoppedSheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
+  const headers = ['車番', '車種', '種別', '車検満了日', '初回確認時のオイル交換実施距離', '初回確認時の距離', '現在の距離', '運転日誌リンク', '車両ID'];
+  headers[16] = '使用状況'; headers[17] = '変速機';
+  const active = ['テスト410え 8', 'ハイエース', '軽油', '2027-02-12', 116000, 120000, '', '=HYPERLINK("https://docs.google.com/spreadsheets/d/test-workbook/edit#gid=21","運転日リンク")', 'テスト410え8'];
+  active[16] = '使用中'; active[17] = own(options, 'transmission', 'AT');
+  const stopped = ['架空500う 2', 'ハイゼット', 'ガソリン', '2027-03-12', '', 1000, '', `=HYPERLINK("https://docs.google.com/spreadsheets/d/test-workbook/edit#gid=${stoppedSheet.getSheetId()}","運転日リンク")`, 'legacy-stopped-car'];
+  stopped[16] = '使用停止'; stopped[17] = '';
+  f.master.data = [headers, active, stopped].map(row => Array.from({ length: 18 }, (_, index) => row[index] ?? ''));
+  f.stoppedSheet = stoppedSheet;
+  f.compact = () => plain(f.context.compactFleetMasterColumns_());
+  return f;
+}
+
+test('compacting legacy I/Q/R preserves business cells, active trips, IDs, gids and inactive vehicles', () => {
+  const f = compactFixture();
+  const started = f.start({}, { requestId: 'start-before-master-compact' }); assert.equal(started.ok, true);
+  const business = plain(f.master.data.map(row => row.slice(0, 8)));
+  const records = plain(f.ss.getSheetByName('_運転日報_記録管理').data);
+  const receipts = plain(f.ss.getSheetByName('_運転日報_リクエスト').data);
+  const favoriteIds = ['テスト410え8', 'legacy-stopped-car'];
+  f.compact();
+  assert.deepEqual(plain(f.master.data.map(row => row.slice(0, 8))), business);
+  assert.deepEqual(f.master.getRange(1, 9, 3, 2).getValues(), [['使用状況', '車両ID'], ['使用中', favoriteIds[0]], ['使用停止', favoriteIds[1]]]);
+  assert.deepEqual(plain(f.ss.getSheetByName('_運転日報_記録管理').data), records);
+  assert.deepEqual(plain(f.ss.getSheetByName('_運転日報_リクエスト').data), receipts);
+  assert.equal(f.call('vehicleContext', { vehicleId: favoriteIds[0] }).data.activeTrip.id, started.data.trip.id);
+  assert.deepEqual(f.start({}, { requestId: 'start-before-master-compact' }), started);
+  assert.equal(f.call('bootstrap').data.vehicles[0].id, favoriteIds[0]);
+  assert.equal(f.call('bootstrap').data.vehicles[0].requiresClutch, false);
+  assert.equal(f.call('vehicleContext', { vehicleId: favoriteIds[1] }).error.code, 'VEHICLE_INACTIVE');
+  assert.equal(f.master.getRange(1, 18, 3, 1).getValues().every(row => row[0] === ''), true);
+  const protection = f.master.getProtections('RANGE').find(item => item.getRange().getColumn() === 9 && item.getRange().getNumColumns() === 2);
+  assert.ok(protection); assert.equal(protection.isWarningOnly(), true);
+  assert.ok(f.master.getRange(1, 9).getNote()); assert.ok(f.master.getRange(1, 10).getNote());
+  assert.equal(f.master.getColumnWidth(9), 100); assert.equal(f.master.getColumnWidth(10), 140);
+  assert.equal(f.finish(started.data.trip.id).ok, true);
+  assert.equal(f.master.getRange(2, 7).getValue(), 120120);
+  const after = plain(f.master.data), moves = f.columnMoves.length, protections = f.master.protections.length;
+  f.compact();
+  assert.deepEqual(plain(f.master.data), after);
+  assert.equal(f.columnMoves.length, moves); assert.equal(f.master.protections.length, protections);
+});
+
+test('compacted columns remain coherent after sorting, renaming, adding and changing usage', () => {
+  const f = compactFixture(); f.compact(); f.install();
+  [f.master.data[1], f.master.data[2]] = [f.master.data[2], f.master.data[1]];
+  const active = f.start({}, { requestId: 'sorted-compact-start' }); assert.equal(active.ok, true);
+  assert.equal(f.finish(active.data.trip.id).ok, true);
+  assert.equal(f.master.getRange(3, 7).getValue(), 120120);
+  assert.equal(f.master.getRange(2, 7).getValue(), '');
+  const renamed = applyFleet(f, 'rename', { vehicleId: 'テスト410え8', number: '架空400あ 88' });
+  assert.equal(renamed.ok, true); assert.equal(renamed.data.vehicle.id, 'テスト410え8'); assert.match(renamed.data.sheetUrl, /gid=21$/);
+  assert.equal(f.call('listHistory', { vehicleId: 'テスト410え8' }).data.trips[0].vehicleNumber, 'テスト410え 8');
+  assert.equal(applyFleet(f, 'setStatus', { vehicleId: 'テスト410え8', active: false }).ok, true);
+  assert.equal(f.call('bootstrap').data.vehicles.length, 0);
+  assert.equal(applyFleet(f, 'setStatus', { vehicleId: 'legacy-stopped-car', active: true }).ok, true);
+  assert.equal(f.call('bootstrap').data.vehicles[0].id, 'legacy-stopped-car');
+  const added = applyFleet(f, 'add', { ...NEW_CAR, requiresClutch: undefined });
+  assert.equal(added.ok, true); assert.equal(added.data.vehicle.requiresClutch, false);
+  assert.equal(f.master.data[0][8], '使用状況'); assert.equal(f.master.data[0][9], '車両ID');
+  assert.equal(f.master.data[0].includes('変速機'), false);
+});
+
+test('compaction validates every transmission value and unrelated cell before moving anything', () => {
+  for (const transmission of ['MT', '不明', '=IF(TRUE,"AT","")']) {
+    const f = compactFixture({ transmission }); const before = plain(f.master.data), writes = f.writes.length;
+    assert.throws(() => f.compact(), { driveLogCode: 'SCHEMA_ERROR' });
+    assert.deepEqual(plain(f.master.data), before); assert.equal(f.writes.length, writes); assert.equal(f.columnMoves?.length || 0, 0);
+  }
+  const f = compactFixture(); f.master.getRange(10, 18).setValue('車両表と無関係な資料');
+  const before = plain(f.master.data);
+  assert.throws(() => f.compact(), { driveLogCode: 'SCHEMA_ERROR' });
+  assert.deepEqual(plain(f.master.data), before);
+});
+
+test('compaction refuses pending management saves and retries an acknowledged column move safely', () => {
+  const pending = compactFixture(); pending.install();
+  const payload = { vehicleId: 'テスト410え8', number: '架空400あ 89' };
+  const preview = pending.admin('preview', 'rename', payload); pending.failRename = true;
+  const options = { expectedRevision: preview.data.expectedRevision, requestId: '88888888-8888-4888-8888-888888888888' };
+  assert.equal(pending.admin('apply', 'rename', payload, options).error.code, 'FLEET_SAVE_PENDING');
+  const before = plain(pending.master.data);
+  assert.throws(() => pending.compact(), { driveLogCode: 'VEHICLE_PENDING' });
+  assert.deepEqual(plain(pending.master.data), before);
+  const f = compactFixture(); const business = plain(f.master.data.map(row => row.slice(0, 8))); f.failMove = true;
+  assert.throws(() => f.compact());
+  assert.equal(f.master.getRange(1, 9).getValue(), '使用状況'); assert.equal(f.master.getRange(1, 10).getValue(), '車両ID');
+  f.compact();
+  assert.equal(f.columnMoves.length, 1);
+  assert.deepEqual(plain(f.master.data.map(row => row.slice(0, 8))), business);
+  assert.equal(f.master.getRange(2, 10).getValue(), 'テスト410え8'); assert.equal(f.master.getRange(3, 9).getValue(), '使用停止');
+});
+
+test('compaction preserves unrelated neighboring cells and resumes after a lost AT-clear acknowledgement', () => {
+  const f = compactFixture();
+  f.master.getRange(6, 11).setValue('隣接する資料'); f.master.getRange(7, 16).setValue('移動元の隣の資料'); f.master.getRange(8, 19).setValue('範囲外の資料');
+  f.fail = { sheet: '社用車一覧', row: 1, col: 18, after: true };
+  assert.throws(() => f.compact());
+  assert.equal(f.master.getRange(6, 12).getValue(), '隣接する資料');
+  assert.equal(f.master.getRange(7, 17).getValue(), '移動元の隣の資料');
+  assert.equal(f.master.getRange(8, 19).getValue(), '範囲外の資料');
+  f.compact();
+  assert.equal(f.columnMoves.length, 1);
+  assert.equal(f.master.getRange(2, 10).getValue(), 'テスト410え8');
+  assert.equal(f.master.getRange(3, 9).getValue(), '使用停止');
+  assert.equal(f.master.getRange(6, 12).getValue(), '隣接する資料');
+  assert.equal(f.master.getRange(8, 19).getValue(), '範囲外の資料');
+});
+
+test('reinstalling an old J:P panel allocates missing metadata outside that panel', () => {
+  const f = fixture(); legacyFleetPanel(f, { 6: '既存入力を保持' });
+  for (const column of [16, 18]) f.master.data.forEach(row => { row[column] = ''; });
+  const original = f.master.getRange(1, 10, 25, 7).getValues();
+  assert.equal(f.install().installed, true);
+  assert.deepEqual(f.master.getRange(1, 10, 25, 7).getValues(), original);
+  assert.ok(f.master.data[0].indexOf('使用状況') >= 16);
+  assert.ok(f.master.data[0].indexOf('車両ID') >= 16);
+  assert.equal(f.call('bootstrap').data.vehicles[0].id, 'テスト410え8');
+});
+
+test('obsolete management transmission inputs are removed without touching other inputs', () => {
+  for (const transmission of ['', 'AT', 'MT']) {
+    const f = fixture(); f.install(); const panel = f.ss.getSheetByName('車両管理ツール');
+    panel.getRange(23, 6).setValue('変速機'); panel.getRange(23, 7).setValue(transmission).setDataValidation({ values: ['AT', 'MT'] });
+    panel.getRange(22, 7).setValue(12345);
+    assert.equal(f.install().installed, true);
+    assert.deepEqual(panel.getRange(23, 6, 1, 2).getValues()[0], ['', '']);
+    assert.equal(panel.validations.has('23:7'), false); assert.equal(panel.getRange(22, 7).getValue(), 12345);
+  }
+  for (const transmission of ['未知の記載', '=""']) {
+    const f = fixture(); f.install(); const panel = f.ss.getSheetByName('車両管理ツール');
+    panel.getRange(23, 6).setValue('変速機'); panel.getRange(23, 7).setValue(transmission);
+    assert.throws(() => f.install(), { driveLogCode: 'PANEL_AREA_CONFLICT' });
+    assert.equal(panel.getRange(23, 7).raw(23, 7), transmission);
+  }
+});
 
 test('fleet RPC and admin HTML require Google self execution and edit permission before any mutation', () => {
   const f = fixture();
@@ -1023,8 +1207,7 @@ test('fleet installer preserves identity and baselines while isolated management
   assert.equal(panel.getIndex(), f.master.getIndex() + 1);
   const headers = f.master.data[0];
   assert.equal(f.master.data[1][headers.indexOf('車両ID')], trip.vehicleId);
-  assert.equal(headers[16], '使用状況');
-  assert.equal(headers[8], '変速機');
+  assert.equal(headers.includes('使用状況'), true);
   assert.equal(f.master.data[1][MASTER.indexOf('初回確認時の距離')], 120000);
   assert.equal(f.master.data[1][MASTER.indexOf('初回確認時のオイル交換実施距離')], 116000);
   assert.equal(f.master.data[1][MASTER.indexOf('現在の距離')], 120120);
@@ -1120,7 +1303,7 @@ test('fleet bootstrap and preview stay read-only and read all isolated panel inp
   assert.match(data.managementUrl, new RegExp(`gid=${sheet.getSheetId()}$`));
   assert.deepEqual(data.panel.rename, { vehicleId: 'テスト410え8', number: '架空400あ 9' });
   assert.deepEqual(data.panel.stop, { vehicleId: 'テスト410え8', active: false });
-  assert.deepEqual(data.panel.add, { number: '架空500う 5', model: 'ハイゼット', fuelType: '軽油', inspectionDue: '2028-05-30', initialOil: 0, initialOdometer: 10, requiresClutch: true });
+  assert.deepEqual(data.panel.add, { number: '架空500う 5', model: 'ハイゼット', fuelType: '軽油', inspectionDue: '2028-05-30', initialOil: 0, initialOdometer: 10 });
   const retired = applyFleet(f, 'setStatus', { vehicleId: 'テスト410え8', active: false });
   assert.equal(retired.ok, true);
   sheet.getRange(17, 3).setValue('テスト410え 8');
@@ -1139,7 +1322,7 @@ test('legacy panel inputs remain readable before migration without writing to th
   assert.deepEqual(result.data.panel.stop, { vehicleId: 'テスト410え8', active: false });
   assert.equal(result.data.panel.add.initialOil, 0);
   assert.equal(result.data.panel.add.initialOdometer, 10);
-  assert.equal(result.data.panel.add.requiresClutch, true);
+  assert.equal(Object.hasOwn(result.data.panel.add, 'requiresClutch'), false);
   assert.equal(f.ss.getSheetByName('車両管理ツール'), null);
 });
 
@@ -1169,7 +1352,7 @@ test('legacy panel migration copies every input and clears only its verified old
   f.context.migrateFleetManagementPanel_('https://script.google.com/macros/s/test-admin-deployment/exec');
   const sheet = f.ss.getSheetByName('車両管理ツール');
   for (const [row, col, value] of [[8, 3, 'テスト410え 8'], [9, 3, '架空400あ 17'], [8, 7, 'テスト410え 8'], [17, 3, '停止車の入力も保持'],
-    [17, 7, '架空500う 5'], [18, 7, 'ハイゼット'], [19, 7, '軽油'], [21, 7, 0], [22, 7, 10], [23, 7, 'MT']]) {
+    [17, 7, '架空500う 5'], [18, 7, 'ハイゼット'], [19, 7, '軽油'], [21, 7, 0], [22, 7, 10], [23, 7, '']]) {
     assert.equal(sheet.getRange(row, col).getValue(), value);
   }
   assert.equal(f.admin('bootstrap').data.panel.add.inspectionDue, '2028-05-30');
@@ -1351,16 +1534,14 @@ test('new vehicle copies the blank template, uses UUID identity and keeps zero v
   assert.match(vehicle.id, /^[0-9a-f-]{36}$/);
   assert.notEqual(vehicle.id, '架空500あ22');
   assert.equal(vehicle.initialOdometer, 0); assert.equal(vehicle.currentOdometer, 0); assert.equal(vehicle.initialOil, null);
-  assert.equal(vehicle.requiresClutch, true);
+  assert.equal(vehicle.requiresClutch, false);
   const sheet = f.ss.getSheetByName(NEW_CAR.number);
   assert.deepEqual(sheet.data[0], HEADERS);
   assert.equal(sheet.getLastRow(), 1);
   assert.match(result.data.sheetUrl, new RegExp(`gid=${sheet.id}$`));
   assert.equal(f.call('bootstrap').data.vehicles.length, 2);
   assert.equal(f.start({ vehicleId: vehicle.id }).error.code, 'VEHICLE_CHANGED');
-  assert.equal(f.start({ vehicleId: vehicle.id, expectedVehicleNumber: vehicle.number }).error.code, 'VALIDATION_ERROR');
-  const checks = Object.fromEntries(['brakes', 'tires', 'engine', 'battery', 'lights', 'washer', 'wipers', 'glass', 'body', 'clutch'].map(key => [key, true]));
-  assert.equal(f.start({ vehicleId: vehicle.id, expectedVehicleNumber: vehicle.number, checks }).data.trip.startOdometer, 0);
+  assert.equal(f.start({ vehicleId: vehicle.id, expectedVehicleNumber: vehicle.number }).data.trip.startOdometer, 0);
 });
 
 test('fleet apply replays its original response and binds immutable requests to their administrator', () => {

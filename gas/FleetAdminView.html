@@ -59,7 +59,6 @@
               <div class="field"><label class="field-label" for="add-odometer">初回メーター <span class="required">必須</span></label><div class="unit-field"><input id="add-odometer" type="number" required min="0" step="1" inputmode="numeric" placeholder="登録時のメーター値"><span>km</span></div><p class="field-help">0kmも登録できます。</p></div>
               <div class="field"><label class="field-label" for="add-oil">前回オイル交換時のメーター <span class="optional">任意</span></label><div class="unit-field"><input id="add-oil" type="number" min="0" step="1" inputmode="numeric" placeholder="分からなければ空欄"><span>km</span></div></div>
               <div class="field"><label class="field-label" for="add-inspection">車検満了日 <span class="optional">任意</span></label><input id="add-inspection" type="date"></div>
-              <div class="field"><span class="field-label">変速機 <span class="optional">任意</span></span><label class="check-option"><input id="add-clutch" type="checkbox"><span><strong>マニュアル車（MT）</strong></span></label></div>
             </div><div class="actions"><button class="button button-primary" type="submit">内容を確認 <span aria-hidden="true">→</span></button></div></fieldset></form>
           </section>
         </div>
@@ -205,7 +204,7 @@
           return;
         }
         const put=(id,value)=>{$(id).value=value === null || value === undefined ? '' : String(value);};
-        put('add-number',panel.number);put('add-model',panel.model);put('add-fuel',panel.fuelType);put('add-inspection',panel.inspectionDue);put('add-oil',panel.initialOil);put('add-odometer',panel.initialOdometer);$('add-clutch').checked=panel.requiresClutch === true;
+        put('add-number',panel.number);put('add-model',panel.model);put('add-fuel',panel.fuelType);put('add-inspection',panel.inspectionDue);put('add-oil',panel.initialOil);put('add-odometer',panel.initialOdometer);
       }
       function requestedView() {
         return new Promise(resolve=>{
@@ -261,7 +260,7 @@
         await preview(operation,form);
       }
       function payloadFor(operation) {
-        if(operation === 'add') return {number:$('add-number').value.trim(),model:$('add-model').value,fuelType:$('add-fuel').value,inspectionDue:$('add-inspection').value,initialOil:$('add-oil').value === '' ? null : Number($('add-oil').value),initialOdometer:$('add-odometer').value === '' ? null : Number($('add-odometer').value),requiresClutch:$('add-clutch').checked};
+        if(operation === 'add') return {number:$('add-number').value.trim(),model:$('add-model').value,fuelType:$('add-fuel').value,inspectionDue:$('add-inspection').value,initialOil:$('add-oil').value === '' ? null : Number($('add-oil').value),initialOdometer:$('add-odometer').value === '' ? null : Number($('add-odometer').value)};
         if(!vehicle())throw issue('VALIDATION_ERROR','対象の車両を選択してください。');
         if(operation === 'rename')return {vehicleId:state.selectedId,number:$('rename-number').value.trim()};
         return {vehicleId:state.selectedId,active:state.operation === 'restore'};
@@ -273,7 +272,7 @@
         if(summary.operation === 'rename')rows.push(['現在のナンバー',summary.previousNumber || '—'],['変更後のナンバー',summary.number || '—']);
         else rows.push(['車両ナンバー',summary.number || summary.previousNumber || '—']);
         if(summary.operation === 'setStatus')rows.push(['変更後の状態',summary.active ? '運用中' : '運用外']);
-        if(summary.operation === 'add')rows.push(['車種',summary.model || '—'],['燃料',summary.fuelType || '—'],['初回メーター',distance(summary.initialOdometer)],['前回オイル交換時',distance(summary.initialOil)],['車検満了日',summary.inspectionDue || '未登録'],['マニュアル車（MT）',summary.requiresClutch ? '該当する' : '該当しない']);
+        if(summary.operation === 'add')rows.push(['車種',summary.model || '—'],['燃料',summary.fuelType || '—'],['初回メーター',distance(summary.initialOdometer)],['前回オイル交換時',distance(summary.initialOil)],['車検満了日',summary.inspectionDue || '未登録']);
         container.replaceChildren();
         rows.forEach(([label,value])=>{const row=document.createElement('div'),term=document.createElement('dt'),description=document.createElement('dd');row.className='review-item';text(term,label);text(description,value);if(label.includes('ナンバー'))description.className='review-number';row.append(term,description);container.append(row);});
       }
