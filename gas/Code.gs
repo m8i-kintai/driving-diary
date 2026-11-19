@@ -640,7 +640,7 @@ function requireVehicle_(ss, id) {
 function resolveVehicleSheet_(ss, vehicle) {
   var sheet = vehicle.sheetId === null ? null : sheetById_(ss, vehicle.sheetId);
   if (!sheet) sheet = ss.getSheets().filter(function (s) { return normalizeId_(s.getName()) === normalizeId_(vehicle.number); })[0];
-  if (!sheet || [DRIVE_LOG_.master, DRIVE_LOG_.template, DRIVE_LOG_.trips, DRIVE_LOG_.requests, FLEET_ADMIN_.journal].indexOf(sheet.getName()) >= 0) {
+  if (!sheet || [DRIVE_LOG_.master, DRIVE_LOG_.template, DRIVE_LOG_.trips, DRIVE_LOG_.requests, FLEET_ADMIN_.journal, FLEET_ADMIN_.panel].indexOf(sheet.getName()) >= 0) {
     fail_('SCHEMA_ERROR', '車両の運転日誌リンクを管理者が確認してください。');
   }
   return sheet;

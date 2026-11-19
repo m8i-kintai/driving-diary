@@ -26,6 +26,7 @@ function fixture(options = {}) {
           if (header === '日付' && /^\d{4}-\d{2}-\d{2}$/.test(value)) value = new Date(`${value}T00:00:00${offset}`);
           if (['出発時間', '終了時間'].includes(header) && /^\d{2}:\d{2}$/.test(value)) value = new Date(`1899-12-30T${value}:00${offset}`);
         }
+        if (value === '=""') return '';
         if (typeof value === 'string' && value.startsWith('=HYPERLINK(')) return '運転日リンク';
         return typeof value === 'string' ? value.replace(/^'(?=[=+\-@])/, '') : value;
       }));
@@ -47,17 +48,37 @@ function fixture(options = {}) {
       return this;
     }
     setNumberFormat(format) { this.sheet.formats.set(`${this.r}:${this.c}`, format); return this; }
+    getNumberFormat() { return this.sheet.formats.get(`${this.r}:${this.c}`) ?? 'General'; }
     setDataValidation(rule) { this.sheet.validations.set(`${this.r}:${this.c}`, rule); return this; }
-    clearDataValidations() { this.sheet.validations.delete(`${this.r}:${this.c}`); return this; }
+    clearDataValidations() {
+      for (let i = 0; i < this.rows; i++) for (let j = 0; j < this.cols; j++) this.sheet.validations.delete(`${this.r + i}:${this.c + j}`);
+      return this;
+    }
+    clearContent() {
+      const failure = env.fail && env.fail.sheet === this.sheet.name && (env.fail.row == null || env.fail.row === this.r) && (env.fail.col == null || env.fail.col === this.c) ? env.fail : null;
+      if (failure && !failure.after) { env.fail = null; throw new Error('Simulated interrupted clear'); }
+      for (let i = 0; i < this.rows; i++) for (let j = 0; j < this.cols; j++) {
+        if (this.sheet.data[this.r + i - 1]) this.sheet.data[this.r + i - 1][this.c + j - 1] = '';
+      }
+      env.writes.push({ sheet: this.sheet.name, r: this.r, c: this.c, rows: this.rows, cols: this.cols, cleared: true });
+      if (failure?.after) { env.fail = null; throw new Error('Simulated lost clear acknowledgement'); }
+      return this;
+    }
+    clearFormat() { return this; }
+    merge() { return this; }
+    breakApart() { return this; }
     setBackground() { return this; }
+    setBorder() { return this; }
     setFontColor() { return this; }
     setFontWeight() { return this; }
     setFontFamily() { return this; }
     setFontSize() { return this; }
     setWrap() { return this; }
+    setVerticalAlignment() { return this; }
+    setHorizontalAlignment() { return this; }
   }
   class Sheet {
-    constructor(name, id, data = []) { Object.assign(this, { name, id, data: data.map(r => [...r]), hidden: false, formats: new Map(), validations: new Map() }); env.sheets.push(this); }
+    constructor(name, id, data = []) { Object.assign(this, { name, id, data: data.map(r => [...r]), hidden: false, formats: new Map(), validations: new Map(), metadata: [], columnWidths: new Map() }); env.sheets.push(this); }
     getName() { return this.name; }
     setName(name) {
       if (env.sheets.some(sheet => sheet !== this && sheet.name === name)) throw new Error('Duplicate sheet name');
@@ -66,8 +87,18 @@ function fixture(options = {}) {
       return this;
     }
     getSheetId() { return this.id; }
+    getIndex() { return env.sheets.indexOf(this) + 1; }
     getParent() { return env.ss; }
-    setColumnWidth() { return this; }
+    setColumnWidth(column, width) { this.columnWidths.set(column, width); return this; }
+    getColumnWidth(column) { return this.columnWidths.get(column) ?? 100; }
+    getDeveloperMetadata() { return this.metadata; }
+    addDeveloperMetadata(key, value) {
+      const metadata = { getKey: () => key, getValue: () => value, setValue(next) { value = next; return this; } };
+      this.metadata.push(metadata);
+      return this;
+    }
+    setRowHeight() { return this; }
+    setHiddenGridlines() { return this; }
     getRange(...args) { return new Range(this, ...args); }
     getLastRow() { for (let i = this.data.length - 1; i >= 0; i--) if (this.data[i]?.some(v => v !== '' && v != null)) return i + 1; return 0; }
     getLastColumn() { return Math.max(0, ...Array.from(this.data, r => r?.reduce((last, v, i) => v !== '' && v != null ? i + 1 : last, 0) ?? 0)); }
@@ -84,9 +115,11 @@ function fixture(options = {}) {
     getSpreadsheetTimeZone: () => env.sheetTimeZone,
     getSheetByName: name => { env.readSheetNames.push(name); return env.sheets.find(s => s.name === name) ?? null; },
     getSheets: () => env.sheets,
-    insertSheet: (name, options = {}) => {
+    insertSheet: (name, indexOrOptions = {}, options = {}) => {
       if (env.sheets.some(sheet => sheet.name === name)) throw new Error('Duplicate sheet name');
+      if (typeof indexOrOptions === 'object') options = indexOrOptions;
       const sheet = new Sheet(name, env.sheets.length + 100, options.template?.data ?? []);
+      if (typeof indexOrOptions === 'number') { env.sheets.pop(); env.sheets.splice(indexOrOptions, 0, sheet); }
       if (env.failInsert) { env.failInsert = false; throw new Error('Simulated lost insert acknowledgement'); }
       return sheet;
     }
@@ -940,6 +973,19 @@ function applyFleet(f, operation, payload, opts = {}) {
 
 const NEW_CAR = { number: '架空500あ 22', model: 'プロボックス', fuelType: 'ガソリン', inspectionDue: '2028-02-29', initialOil: null, initialOdometer: 0, requiresClutch: false };
 
+function legacyFleetPanel(f, inputs = {}) {
+  const url = 'https://script.google.com/macros/s/test-admin-deployment/exec?view=fleet';
+  const labels = { 1: '社用車 管理ツール', 2: '入力後、右の「内容を確認・実行」を押してください', 3: '運転中・保存中の車両は変更できません',
+    4: '番号変更', 5: '対象車両', 6: '新しい車番', 9: '運用から外す', 10: '対象車両', 13: '運用に戻す', 14: '対象車両',
+    17: '新規追加', 18: '車番', 19: '車種', 20: '燃料', 21: '車検満了日', 22: '初回オイル交換距離', 23: '初回確認時の距離', 24: '変速機 (AT/MT)' };
+  Object.entries(labels).forEach(([row, value]) => f.master.getRange(Number(row), 10).setValue(value));
+  for (const [row, operation] of [[4, 'rename'], [9, 'stop'], [13, 'restore'], [17, 'add']]) {
+    f.master.getRange(row, 14).setValue(`=HYPERLINK("${url}&operation=${operation}","内容を確認・実行")`);
+  }
+  Object.entries(inputs).forEach(([row, value]) => f.master.getRange(Number(row), 11).setValue(value));
+  return f.master.getRange(1, 10, 25, 7).getValues();
+}
+
 test('fleet RPC and admin HTML require Google self execution and edit permission before any mutation', () => {
   const f = fixture();
   for (const [active, effective, canEdit, code] of [
@@ -960,13 +1006,21 @@ test('fleet RPC and admin HTML require Google self execution and edit permission
   assert.equal(f.call('fleetAdminRpc', { action: 'apply' }).error.code, 'VALIDATION_ERROR');
 });
 
-test('fleet installer preserves legacy identity and meter baselines and keeps J:P input cells on rerun', () => {
-  const blocked = fixture(); blocked.master.getRange(8, 12).setValue('既存の大事な資料');
+test('fleet installer preserves identity and baselines while isolated management inputs survive reruns', () => {
+  const blocked = fixture(); blocked.ss.insertSheet('車両管理ツール').getRange(1, 1).setValue('既存の大事な資料');
   const before = blocked.writes.length;
   assert.throws(() => blocked.install(), { driveLogCode: 'PANEL_AREA_CONFLICT' });
   assert.equal(blocked.writes.length, before);
+  const unrelated = fixture(); unrelated.master.getRange(8, 12).setValue('既存の別資料は移設対象外');
+  const unrelatedBefore = unrelated.writes.length;
+  assert.throws(() => unrelated.install(), { driveLogCode: 'PANEL_AREA_CONFLICT' });
+  assert.equal(unrelated.writes.length, unrelatedBefore);
+  assert.equal(unrelated.master.getRange(8, 12).getValue(), '既存の別資料は移設対象外');
   const f = fixture(); const trip = f.start().data.trip; f.finish(trip.id);
   assert.equal(f.install().installed, true);
+  const panel = f.ss.getSheetByName('車両管理ツール');
+  assert.ok(panel);
+  assert.equal(panel.getIndex(), f.master.getIndex() + 1);
   const headers = f.master.data[0];
   assert.equal(f.master.data[1][headers.indexOf('車両ID')], trip.vehicleId);
   assert.equal(headers[16], '使用状況');
@@ -974,14 +1028,13 @@ test('fleet installer preserves legacy identity and meter baselines and keeps J:
   assert.equal(f.master.data[1][MASTER.indexOf('初回確認時の距離')], 120000);
   assert.equal(f.master.data[1][MASTER.indexOf('初回確認時のオイル交換実施距離')], 116000);
   assert.equal(f.master.data[1][MASTER.indexOf('現在の距離')], 120120);
-  assert.equal(f.master.getRange(9, 10).getValue(), '運用から外す');
-  assert.match(f.master.getRange(9, 14).getFormulas()[0][0], /operation=stop/);
-  f.master.getRange(5, 11).setValue('テスト410え 8'); f.master.getRange(6, 11).setValue('新しい車番');
+  assert.match(panel.getRange(11, 6).getFormulas()[0][0], /operation=stop/);
+  panel.getRange(8, 3).setValue('テスト410え 8'); panel.getRange(9, 3).setValue('新しい車番');
   const columns = f.master.getLastColumn();
   f.install();
   assert.equal(f.master.getLastColumn(), columns);
-  assert.equal(f.master.getRange(6, 11).getValue(), '新しい車番');
-  assert.deepEqual(f.master.validations.get('5:11').values, ['テスト410え 8']);
+  assert.equal(panel.getRange(9, 3).getValue(), '新しい車番');
+  assert.deepEqual(panel.validations.get('8:3').values, ['テスト410え 8']);
   assert.equal(f.call('bootstrap').data.vehicles[0].id, trip.vehicleId);
   assert.equal(f.call('listHistory', { vehicleId: trip.vehicleId }).data.trips.length, 1);
 });
@@ -992,9 +1045,10 @@ test('fleet installer preserves Workspace-scoped links without pinning a browser
     const f = fixture();
     const result = plain(f.context.installFleetManagement_(base + suffix));
     assert.equal(result.adminUrl, base + '?view=fleet');
-    for (const [row, operation] of [[4, 'rename'], [9, 'stop'], [13, 'restore'], [17, 'add']]) {
-      const formula = f.master.getRange(row, 14).getFormulas()[0][0];
-      assert.equal(formula, `=HYPERLINK("${base}?view=fleet&operation=${operation}","内容を確認・実行")`);
+    const panel = f.ss.getSheetByName('車両管理ツール');
+    for (const [row, column, operation, label] of [[11, 2, 'rename', '変更内容を確認'], [11, 6, 'stop', '外す車両を確認'], [20, 2, 'restore', '戻す車両を確認'], [25, 6, 'add', '登録内容を確認']]) {
+      const formula = panel.getRange(row, column).getFormulas()[0][0];
+      assert.equal(formula, `=HYPERLINK("${base}?view=fleet&operation=${operation}","${label}")`);
       assert.doesNotMatch(formula, /authuser=|\/u\/\d+\//);
     }
   }
@@ -1043,7 +1097,7 @@ test('fleet initial installation still rejects pending saves and mismatched acti
   assert.equal(mismatch.writes.length, before);
 });
 
-test('fleet bootstrap and preview stay read-only and bootstrap reads optional spreadsheet-panel inputs', () => {
+test('fleet bootstrap and preview stay read-only and read all isolated panel inputs', () => {
   const f = fixture();
   assert.equal(f.admin('preview', 'rename', { vehicleId: 'テスト410え8', number: '架空400あ 9' }).error.code, 'FLEET_NOT_INSTALLED');
   f.install();
@@ -1058,15 +1112,159 @@ test('fleet bootstrap and preview stay read-only and bootstrap reads optional sp
   assert.equal(preview.data.summary.previousNumber, 'テスト410え 8');
   assert.equal(typeof preview.data.expectedRevision, 'string');
   assert.equal(f.writes.length, writes);
-  f.master.getRange(5, 11).setValue('テスト410え　8'); f.master.getRange(6, 11).setValue('架空400あ 9');
-  f.master.getRange(18, 11).setValue('架空500う 5'); f.master.getRange(19, 11).setValue('ハイゼット');
-  f.master.getRange(20, 11).setValue('軽油'); f.master.getRange(21, 11).setValue('2028-05-30');
-  f.master.getRange(22, 11).setValue(0); f.master.getRange(23, 11).setValue(10); f.master.getRange(24, 11).setValue('MT');
-  const panel = f.admin('bootstrap').data.panel;
-  assert.deepEqual(panel.rename, { vehicleId: 'テスト410え8', number: '架空400あ 9' });
-  assert.equal(panel.add.initialOil, 0);
-  assert.equal(panel.add.initialOdometer, 10);
-  assert.equal(panel.add.requiresClutch, true);
+  const sheet = f.ss.getSheetByName('車両管理ツール');
+  sheet.getRange(8, 3).setValue('テスト410え　8'); sheet.getRange(9, 3).setValue('架空400あ 9');
+  sheet.getRange(8, 7).setValue('テスト410え 8');
+  for (const [row, value] of [[17, '架空500う 5'], [18, 'ハイゼット'], [19, '軽油'], [20, '2028-05-30'], [21, 0], [22, 10], [23, 'MT']]) sheet.getRange(row, 7).setValue(value);
+  const data = f.admin('bootstrap').data;
+  assert.match(data.managementUrl, new RegExp(`gid=${sheet.getSheetId()}$`));
+  assert.deepEqual(data.panel.rename, { vehicleId: 'テスト410え8', number: '架空400あ 9' });
+  assert.deepEqual(data.panel.stop, { vehicleId: 'テスト410え8', active: false });
+  assert.deepEqual(data.panel.add, { number: '架空500う 5', model: 'ハイゼット', fuelType: '軽油', inspectionDue: '2028-05-30', initialOil: 0, initialOdometer: 10, requiresClutch: true });
+  const retired = applyFleet(f, 'setStatus', { vehicleId: 'テスト410え8', active: false });
+  assert.equal(retired.ok, true);
+  sheet.getRange(17, 3).setValue('テスト410え 8');
+  assert.deepEqual(f.admin('bootstrap').data.panel.restore, { vehicleId: 'テスト410え8', active: true });
+});
+
+test('legacy panel inputs remain readable before migration without writing to the workbook', () => {
+  const f = fixture();
+  legacyFleetPanel(f, { 5: 'テスト410え 8', 6: '架空400あ 17', 10: 'テスト410え 8',
+    18: '架空500う 5', 19: 'ハイゼット', 20: '軽油', 21: '2028-05-30', 22: 0, 23: 10, 24: 'MT' });
+  const writes = f.writes.length;
+  const result = f.admin('bootstrap');
+  assert.equal(result.ok, true);
+  assert.equal(f.writes.length, writes);
+  assert.deepEqual(result.data.panel.rename, { vehicleId: 'テスト410え8', number: '架空400あ 17' });
+  assert.deepEqual(result.data.panel.stop, { vehicleId: 'テスト410え8', active: false });
+  assert.equal(result.data.panel.add.initialOil, 0);
+  assert.equal(result.data.panel.add.initialOdometer, 10);
+  assert.equal(result.data.panel.add.requiresClutch, true);
+  assert.equal(f.ss.getSheetByName('車両管理ツール'), null);
+});
+
+test('panel-only migration leaves master rows and active driving records completely unchanged', () => {
+  const f = fixture(); const started = f.start({}, { requestId: 'active-before-panel-migration' }); f.install();
+  f.sheets.splice(f.sheets.findIndex(sheet => sheet.name === '車両管理ツール'), 1);
+  legacyFleetPanel(f, { 5: 'テスト410え 8', 6: '移設用の入力', 22: 0, 23: 0 });
+  const preserved = new Map(f.sheets.map(sheet => [sheet.name, plain(sheet.data)]));
+  const before = f.writes.length;
+  f.context.migrateFleetManagementPanel_('https://script.google.com/macros/s/test-admin-deployment/exec');
+  const panel = f.ss.getSheetByName('車両管理ツール');
+  assert.ok(panel);
+  assert.equal(panel.getRange(9, 3).getValue(), '移設用の入力');
+  assert.equal(Array.from({ length: 9 }, (_, i) => panel.getColumnWidth(i + 1)).reduce((sum, width) => sum + width, 0), 710);
+  for (const [name, data] of preserved) assert.deepEqual(plain(f.ss.getSheetByName(name).data), data, name);
+  assert.ok(f.writes.slice(before).every(write => write.sheet === '車両管理ツール'));
+  assert.equal(f.call('vehicleContext', { vehicleId: started.data.trip.vehicleId }).data.activeTrip.id, started.data.trip.id);
+  assert.deepEqual(f.start({}, { requestId: 'active-before-panel-migration' }), started);
+});
+
+test('legacy panel migration copies every input and clears only its verified old range after explicit cleanup', () => {
+  const f = fixture(); f.install();
+  f.sheets.splice(f.sheets.findIndex(sheet => sheet.name === '車両管理ツール'), 1);
+  const legacy = legacyFleetPanel(f, { 5: 'テスト410え 8', 6: '架空400あ 17', 10: 'テスト410え 8', 14: '停止車の入力も保持',
+    18: '架空500う 5', 19: 'ハイゼット', 20: '軽油', 21: new Date('2028-05-30T00:00:00+09:00'), 22: 0, 23: 10, 24: 'MT' });
+  const primary = plain(f.master.data.slice(0, 2).map(row => row.slice(0, MASTER.length)));
+  f.context.migrateFleetManagementPanel_('https://script.google.com/macros/s/test-admin-deployment/exec');
+  const sheet = f.ss.getSheetByName('車両管理ツール');
+  for (const [row, col, value] of [[8, 3, 'テスト410え 8'], [9, 3, '架空400あ 17'], [8, 7, 'テスト410え 8'], [17, 3, '停止車の入力も保持'],
+    [17, 7, '架空500う 5'], [18, 7, 'ハイゼット'], [19, 7, '軽油'], [21, 7, 0], [22, 7, 10], [23, 7, 'MT']]) {
+    assert.equal(sheet.getRange(row, col).getValue(), value);
+  }
+  assert.equal(f.admin('bootstrap').data.panel.add.inspectionDue, '2028-05-30');
+  assert.deepEqual(f.master.getRange(1, 10, 25, 7).getValues(), legacy, 'install must retain the complete original panel until explicit cleanup');
+  assert.deepEqual(plain(f.master.data.slice(0, 2).map(row => row.slice(0, MASTER.length))), primary);
+  const identity = f.master.data[1][f.master.data[0].indexOf('車両ID')];
+  f.context.removeLegacyFleetPanel_();
+  assert.ok(f.master.getRange(1, 10, 25, 7).getValues().every(row => row.every(value => value === '')));
+  assert.equal(f.master.data[1][f.master.data[0].indexOf('車両ID')], identity);
+  assert.equal(f.master.data[1][f.master.data[0].indexOf('使用状況')], '使用中');
+  assert.deepEqual(plain(f.master.data.slice(0, 2).map(row => row.slice(0, MASTER.length))), primary);
+  assert.equal(sheet.getRange(9, 3).getValue(), '架空400あ 17');
+  f.install();
+  assert.equal(sheet.getRange(9, 3).getValue(), '架空400あ 17');
+});
+
+test('migration never overwrites conflicting new inputs or clears unknown legacy content', () => {
+  const f = fixture(); legacyFleetPanel(f, { 6: '旧入力' }); f.install();
+  const sheet = f.ss.getSheetByName('車両管理ツール'); sheet.getRange(9, 3).setValue('新側で編集中');
+  assert.throws(() => f.install());
+  assert.equal(sheet.getRange(9, 3).getValue(), '新側で編集中');
+  assert.equal(f.master.getRange(6, 11).getValue(), '旧入力');
+  assert.throws(() => f.context.removeLegacyFleetPanel_());
+  assert.equal(sheet.getRange(9, 3).getValue(), '新側で編集中');
+  assert.equal(f.master.getRange(6, 11).getValue(), '旧入力');
+
+  const unknown = fixture(); legacyFleetPanel(unknown, { 6: '保持対象の入力' }); unknown.master.getRange(8, 12).setValue('管理表と無関係な資料');
+  const original = unknown.master.getRange(1, 10, 25, 7).getValues();
+  const before = unknown.writes.length;
+  assert.throws(() => unknown.install(), { driveLogCode: 'PANEL_AREA_CONFLICT' });
+  assert.equal(unknown.writes.length, before);
+  assert.throws(() => unknown.context.removeLegacyFleetPanel_());
+  assert.deepEqual(unknown.master.getRange(1, 10, 25, 7).getValues(), original);
+});
+
+test('a lost migration write acknowledgement keeps the original inputs available for a safe retry', () => {
+  const f = fixture(); legacyFleetPanel(f, { 5: 'テスト410え 8', 6: '再実行でも失わない', 22: 0, 23: 0 });
+  const original = f.master.getRange(1, 10, 25, 7).getValues();
+  f.fail = { sheet: '車両管理ツール', row: 9, col: 3, after: true };
+  assert.throws(() => f.install());
+  assert.deepEqual(f.master.getRange(1, 10, 25, 7).getValues(), original);
+  assert.equal(f.install().installed, true);
+  const sheet = f.ss.getSheetByName('車両管理ツール');
+  assert.equal(sheet.getRange(9, 3).getValue(), '再実行でも失わない');
+  assert.equal(sheet.getRange(21, 7).getValue(), 0);
+  assert.equal(sheet.getRange(22, 7).getValue(), 0);
+});
+
+test('legacy cleanup retries after a lost acknowledgement and preserves an added blank-result formula', () => {
+  const f = fixture(); legacyFleetPanel(f, { 6: '消去前に引き継ぐ', 22: 0, 23: 10 }); f.install();
+  const panel = f.ss.getSheetByName('車両管理ツール');
+  f.master.getRange(21, 11).setNumberFormat('yyyy-mm-dd');
+  f.master.getRange(22, 11).setNumberFormat('0');
+  f.master.getRange(23, 11).setNumberFormat('0');
+  f.fail = { sheet: '社用車一覧', row: 1, col: 10, after: true };
+  assert.throws(() => f.context.removeLegacyFleetPanel_());
+  assert.ok(f.master.getRange(1, 10, 25, 7).getValues().every(row => row.every(value => value === '')));
+  assert.equal(panel.getRange(9, 3).getValue(), '消去前に引き継ぐ');
+  f.master.getRange(8, 12).setValue('=""');
+  assert.throws(() => f.context.removeLegacyFleetPanel_(), { driveLogCode: 'PANEL_AREA_CONFLICT' });
+  assert.equal(f.master.getRange(8, 12).getValue(), '');
+  assert.equal(f.master.getRange(8, 12).getFormulas()[0][0], '=""');
+  f.master.getRange(8, 12).setValue('');
+  assert.equal(f.context.removeLegacyFleetPanel_().removed, true);
+  assert.equal(f.master.getRange(21, 11).getNumberFormat(), 'General');
+  assert.equal(f.master.getRange(22, 11).getNumberFormat(), 'General');
+  assert.equal(f.master.getRange(23, 11).getNumberFormat(), 'General');
+  assert.equal(panel.getRange(21, 7).getValue(), 0);
+  assert.equal(panel.getRange(22, 7).getValue(), 10);
+  assert.equal(f.context.removeLegacyFleetPanel_().removed, false);
+});
+
+test('legacy cleanup waits for a pending management save and preserves custom number formatting', () => {
+  const f = fixture(); legacyFleetPanel(f); f.install();
+  const payload = { vehicleId: 'テスト410え8', number: '架空400あ 83' };
+  const preview = f.admin('preview', 'rename', payload);
+  const opts = { expectedRevision: preview.data.expectedRevision, requestId: '77777777-7777-4777-8777-777777777777' };
+  f.failRename = true;
+  assert.equal(f.admin('apply', 'rename', payload, opts).error.code, 'FLEET_SAVE_PENDING');
+  const before = f.writes.length;
+  assert.throws(() => f.context.removeLegacyFleetPanel_(), { driveLogCode: 'VEHICLE_PENDING' });
+  assert.equal(f.writes.length, before);
+  assert.equal(f.master.getRange(1, 10).getValue(), '社用車 管理ツール');
+  assert.equal(f.admin('apply', 'rename', payload, opts).ok, true);
+  f.master.getRange(22, 11).setNumberFormat('0.00');
+  assert.equal(f.context.removeLegacyFleetPanel_().removed, true);
+  assert.equal(f.master.getRange(22, 11).getNumberFormat(), '0.00');
+});
+
+test('management sheet identity is reserved and cannot become a vehicle trip destination', () => {
+  const f = fixture(); f.install();
+  assert.equal(f.admin('preview', 'add', { ...NEW_CAR, number: '車両管理ツール' }).error.code, 'VALIDATION_ERROR');
+  const sheet = f.ss.getSheetByName('車両管理ツール');
+  f.master.getRange(2, MASTER.indexOf('運転日誌リンク') + 1).setValue(`=HYPERLINK("https://docs.google.com/spreadsheets/d/test/edit#gid=${sheet.getSheetId()}","運転日リンク")`);
+  assert.equal(f.call('vehicleContext', { vehicleId: 'テスト410え8' }).error.code, 'SCHEMA_ERROR');
 });
 
 test('rename keeps stable ID, history, receipts and gid while new starts require the displayed current number', () => {
@@ -1091,7 +1289,7 @@ test('rename keeps stable ID, history, receipts and gid while new starts require
 
 test('retiring and restoring a vehicle updates driver choices and server guards without deleting history', () => {
   const f = fixture(); const trip = f.start().data.trip; f.finish(trip.id); f.install();
-  f.master.getRange(6, 11).setValue('保持する入力');
+  const panel = f.ss.getSheetByName('車両管理ツール'); panel.getRange(9, 3).setValue('保持する入力');
   const retired = applyFleet(f, 'setStatus', { vehicleId: trip.vehicleId, active: false });
   assert.equal(retired.ok, true, JSON.stringify(retired));
   assert.equal(retired.data.message, '運用から外しました。');
@@ -1100,8 +1298,8 @@ test('retiring and restoring a vehicle updates driver choices and server guards 
   assert.equal(f.start().error.code, 'VEHICLE_INACTIVE');
   assert.equal(f.call('vehicleContext', { vehicleId: trip.vehicleId }).error.code, 'VEHICLE_INACTIVE');
   assert.equal(f.call('listHistory', { vehicleId: trip.vehicleId }).data.trips.length, 1);
-  assert.deepEqual(f.master.validations.get('14:11').values, ['テスト410え 8']);
-  assert.equal(f.master.getRange(6, 11).getValue(), '保持する入力');
+  assert.deepEqual(panel.validations.get('17:3').values, ['テスト410え 8']);
+  assert.equal(panel.getRange(9, 3).getValue(), '保持する入力');
   assert.equal(applyFleet(f, 'setStatus', { vehicleId: trip.vehicleId, active: true }).ok, true);
   assert.equal(f.call('bootstrap').data.vehicles.length, 1);
   assert.equal(f.start().ok, true);

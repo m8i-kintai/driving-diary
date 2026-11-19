@@ -4,6 +4,11 @@
  */
 var FLEET_ADMIN_ = Object.freeze({
   journal: '_運転日報_車両管理',
+  panel: '車両管理ツール', panelMetadata: 'DRIVE_FLEET_PANEL', cleanupMetadata: 'DRIVE_FLEET_LEGACY_CLEANUP',
+  inputs: { renameVehicle: [8, 3], renameNumber: [9, 3], stopVehicle: [8, 7], restoreVehicle: [17, 3],
+    number: [17, 7], model: [18, 7], fuel: [19, 7], inspection: [20, 7], initialOil: [21, 7], initialOdometer: [22, 7], transmission: [23, 7] },
+  legacyInputs: { renameVehicle: [5, 11], renameNumber: [6, 11], stopVehicle: [10, 11], restoreVehicle: [14, 11],
+    number: [18, 11], model: [19, 11], fuel: [20, 11], inspection: [21, 11], initialOil: [22, 11], initialOdometer: [23, 11], transmission: [24, 11] },
   headers: ['requestId', 'adminEmail', 'fingerprint', 'state', 'operationJson', 'responseJson', 'createdAt'],
   models: ['ハイエース', 'ハイゼット', 'サクシード', 'プロボックス', 'トヨエース'],
   optional: { stableId: ['車両ID'], usage: ['使用状況'], transmission: ['変速機', 'ミッション'] }
@@ -74,8 +79,11 @@ function fleetValidateRequest_(request) {
 function fleetBootstrap_(ss, email) {
   var vehicles = loadVehicles_(ss);
   var pending = fleetPendingVehicleIds_(ss);
+  var management = ss.getSheetByName(FLEET_ADMIN_.panel);
+  var masterUrl = sheetUrl_(ss, ss.getSheetByName(DRIVE_LOG_.master).getSheetId());
   return { adminEmail: email, vehicles: vehicles.filter(function (v) { return pending.indexOf(v.id) < 0; }).map(function (v) { return fleetPublicVehicle_(ss, v); }),
-    models: FLEET_ADMIN_.models.slice(), fuels: ['ガソリン', '軽油'], masterUrl: sheetUrl_(ss, ss.getSheetByName(DRIVE_LOG_.master).getSheetId()), panel: fleetReadPanel_(ss, vehicles) };
+    models: FLEET_ADMIN_.models.slice(), fuels: ['ガソリン', '軽油'], masterUrl: masterUrl,
+    managementUrl: fleetPanelInstalled_(management) ? sheetUrl_(ss, management.getSheetId()) : masterUrl, panel: fleetReadPanel_(ss, vehicles) };
 }
 
 function fleetPublicVehicle_(ss, vehicle) {
@@ -124,7 +132,7 @@ function fleetRequireInstalled_(ss) {
 function fleetNumber_(value) {
   var number = text_(value, '車番', 80, true).normalize('NFKC').replace(/\s+/g, ' ');
   if (/[\u0000-\u001f\u007f\[\]:*?\/\\]/.test(number) || /^['=+\-@]|'$/.test(number)) fail_('VALIDATION_ERROR', '車番に使用できない文字が含まれています。');
-  if ([DRIVE_LOG_.master, DRIVE_LOG_.template, DRIVE_LOG_.trips, DRIVE_LOG_.requests, FLEET_ADMIN_.journal].indexOf(number) >= 0) fail_('VALIDATION_ERROR', '管理用シート名は車番に使用できません。');
+  if ([DRIVE_LOG_.master, DRIVE_LOG_.template, DRIVE_LOG_.trips, DRIVE_LOG_.requests, FLEET_ADMIN_.journal, FLEET_ADMIN_.panel].indexOf(number) >= 0) fail_('VALIDATION_ERROR', '管理用シート名は車番に使用できません。');
   return number;
 }
 
@@ -310,12 +318,12 @@ function fleetWriteNewMasterRow_(meta, row, fields) {
 // preserves every existing vehicle ID and never rewrites odometer baselines.
 function installFleetManagement_(adminUrl) {
   var access = fleetAdminAccess_();
-  var adminUrlPattern = /^https:\/\/script\.google\.com\/(?:macros|a\/macros\/(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63})\/s\/[A-Za-z0-9_-]+\/exec(?:\?view=fleet)?$/;
-  if (typeof adminUrl !== 'string' || !adminUrlPattern.test(adminUrl)) fail_('VALIDATION_ERROR', '管理用Webアプリの公開URLを指定してください。');
+  var url = fleetAdminUrl_(adminUrl);
   var lock = LockService.getScriptLock(); lock.waitLock(25000);
   try {
     var ss = access.ss, vehicles = loadVehicles_(ss), master = ss.getSheetByName(DRIVE_LOG_.master);
     fleetAssertPanelArea_(master);
+    fleetAssertManagementSheet_(ss.getSheetByName(FLEET_ADMIN_.panel));
     if (fleetPendingVehicleIds_(ss).length) fail_('VEHICLE_PENDING', '保存途中の管理操作があります。');
     vehicles.forEach(function (v) { fleetAssertVehicleIdle_(ss, v.id, true); resolveVehicleSheet_(ss, v); });
     var table = table_(master, MASTER_SCHEMA_), optional = headerMap_(table.headers, FLEET_ADMIN_.optional, false);
@@ -334,77 +342,262 @@ function installFleetManagement_(adminUrl) {
       master.getRange(v.masterRow, table.map.link + 1).setValue('=HYPERLINK("' + sheetUrl_(ss, resolveVehicleSheet_(ss, v).getSheetId()) + '","運転日リンク")');
     });
     fleetJournal_(ss, true);
-    var url = adminUrl.replace(/\?view=fleet$/, '') + '?view=fleet';
     fleetInstallPanel_(ss, url);
     SpreadsheetApp.flush();
     fleetRequireInstalled_(ss);
-    return { installed: true, vehicles: vehicles.length, adminUrl: url, panelRange: 'J1:P25' };
+    return { installed: true, vehicles: vehicles.length, adminUrl: url, panelRange: FLEET_ADMIN_.panel + '!A1:I27',
+      managementUrl: sheetUrl_(ss, ss.getSheetByName(FLEET_ADMIN_.panel).getSheetId()) };
   } finally { try { SpreadsheetApp.flush(); } finally { lock.releaseLock(); } }
 }
 
-function fleetPanelInstalled_(master) { return master.getRange(1, 10).getValue() === '社用車 管理ツール'; }
+function fleetAdminUrl_(adminUrl) {
+  var pattern = /^https:\/\/script\.google\.com\/(?:macros|a\/macros\/(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63})\/s\/[A-Za-z0-9_-]+\/exec(?:\?view=fleet)?$/;
+  if (typeof adminUrl !== 'string' || !pattern.test(adminUrl)) fail_('VALIDATION_ERROR', '管理用Webアプリの公開URLを指定してください。');
+  return adminUrl.replace(/\?view=fleet$/, '') + '?view=fleet';
+}
+
+// Existing installations use this command instead of rerunning ID/master setup.
+// Stage one leaves the legacy panel available to the previously deployed UI.
+function migrateFleetManagementPanel_(adminUrl) {
+  var access = fleetAdminAccess_(), url = fleetAdminUrl_(adminUrl);
+  var lock = LockService.getScriptLock(); lock.waitLock(25000);
+  try {
+    fleetRequireInstalled_(access.ss);
+    var sheet = fleetInstallPanel_(access.ss, url);
+    return { migrated: true, managementUrl: sheetUrl_(access.ss, sheet.getSheetId()),
+      panelRange: FLEET_ADMIN_.panel + '!A1:I27', legacyRetained: fleetLegacyPanelInstalled_(access.ss.getSheetByName(DRIVE_LOG_.master)) };
+  } finally { try { SpreadsheetApp.flush(); } finally { lock.releaseLock(); } }
+}
+
+function fleetPanelMeta_(sheet, key) {
+  if (!sheet) return null;
+  return sheet.getDeveloperMetadata().filter(function (entry) { return entry.getKey() === key; })[0] || null;
+}
+
+function fleetSetPanelMeta_(sheet, key, value) {
+  var existing = fleetPanelMeta_(sheet, key);
+  if (existing) existing.setValue(value); else sheet.addDeveloperMetadata(key, value);
+}
+
+function fleetPanelInstalled_(sheet) {
+  var marker = fleetPanelMeta_(sheet, FLEET_ADMIN_.panelMetadata);
+  return !!(sheet && sheet.getName() === FLEET_ADMIN_.panel && sheet.getRange(2, 2).getValue() === FLEET_ADMIN_.panel && marker && marker.getValue() === 'ready');
+}
+
+function fleetLegacyPanelInstalled_(master) { return master.getRange(1, 10).getValue() === '社用車 管理ツール'; }
+
+function fleetLegacyLabels_() {
+  return { '1:10': ['社用車 管理ツール'], '2:10': ['入力後、右の「内容を確認・実行」を押してください'], '3:10': ['運転中・保存中の車両は変更できません'],
+    '4:10': ['番号変更'], '5:10': ['対象車両'], '6:10': ['新しい車番'], '9:10': ['運用から外す'], '10:10': ['対象車両'],
+    '13:10': ['運用に戻す'], '14:10': ['対象車両'], '17:10': ['新規追加'], '18:10': ['車番'], '19:10': ['車種'], '20:10': ['燃料'],
+    '21:10': ['車検満了日'], '22:10': ['前回オイル交換時メーター (km)', '初回オイル交換距離'],
+    '23:10': ['初回確認時の距離 (km)', '初回確認時の距離'], '24:10': ['変速機 (AT/MT)'] };
+}
+
+function fleetManagementLabels_() {
+  return { '2:2': FLEET_ADMIN_.panel, '5:2': '車番を変更', '5:6': '運用から外す', '14:2': '運用に戻す', '14:6': '車両を追加',
+    '8:2': '対象車両', '9:2': '新しい車番', '8:6': '対象車両', '17:2': '対象車両', '17:6': '車番', '18:6': '車種', '19:6': '燃料',
+    '20:6': '車検満了日（任意）', '21:6': '前回オイル交換 km\n（任意）', '22:6': '初回距離 km', '23:6': '変速機' };
+}
+
+function fleetManagementButtons_() {
+  return [{ row: 11, col: 2, operation: 'rename', label: '変更内容を確認' }, { row: 11, col: 6, operation: 'stop', label: '外す車両を確認' },
+    { row: 20, col: 2, operation: 'restore', label: '戻す車両を確認' }, { row: 25, col: 6, operation: 'add', label: '登録内容を確認' }];
+}
+
+function fleetPanelLinkMatches_(formula, operation, label) {
+  var match = /^=HYPERLINK\("([^"]+)","([^"]+)"\)$/i.exec(String(formula || ''));
+  if (!match || match[2] !== label || !match[1].endsWith('&operation=' + operation)) return false;
+  try { return fleetAdminUrl_(match[1].slice(0, -('&operation=' + operation).length)) === match[1].slice(0, -('&operation=' + operation).length); }
+  catch (_) { return false; }
+}
 
 function fleetAssertPanelArea_(master) {
-  if (!fleetPanelInstalled_(master) && master.getRange(1, 10, 25, 7).getValues().some(function (row) { return row.some(function (value) { return !blank_(value); }); })) {
-    fail_('PANEL_AREA_CONFLICT', '社用車一覧のJ〜P列に既存データがあります。管理パネルを設置せず停止しました。');
+  if (fleetLegacyPanelInstalled_(master)) { fleetValidateLegacyPanel_(master); return; }
+  if (master.getRange(1, 10, 25, 7).getValues().some(function (row) { return row.some(function (value) { return !blank_(value); }); })) {
+    fail_('PANEL_AREA_CONFLICT', '社用車一覧のJ〜P列に既存データがあります。既存データを保持して停止しました。');
   }
+}
+
+function fleetValidateLegacyPanel_(master) {
+  var labels = fleetLegacyLabels_(), inputs = {}, buttons = { '4:14': 'rename', '9:14': 'stop', '13:14': 'restore', '17:14': 'add' };
+  Object.keys(FLEET_ADMIN_.legacyInputs).forEach(function (key) { inputs[FLEET_ADMIN_.legacyInputs[key].join(':')] = true; });
+  var range = master.getRange(1, 10, 25, 7), values = range.getValues(), formulas = range.getFormulas();
+  for (var row = 0; row < 25; row++) for (var col = 0; col < 7; col++) {
+    var key = (row + 1) + ':' + (col + 10), value = values[row][col], formula = formulas[row][col];
+    if (inputs[key] && !formula) continue;
+    if (buttons[key] && fleetPanelLinkMatches_(formula, buttons[key], '内容を確認・実行')) continue;
+    if (!formula && labels[key] && labels[key].indexOf(String(value)) >= 0) continue;
+    if (!blank_(value) || formula) fail_('PANEL_AREA_CONFLICT', '旧管理表に想定外の値があります。旧表を保持して停止しました。');
+  }
+  Object.keys(labels).forEach(function (key) {
+    var parts = key.split(':').map(Number);
+    if (labels[key].indexOf(String(master.getRange(parts[0], parts[1]).getValue())) < 0) fail_('PANEL_AREA_CONFLICT', '旧管理表を識別できません。旧表を保持して停止しました。');
+  });
+  Object.keys(buttons).forEach(function (key) {
+    var parts = key.split(':').map(Number);
+    if (!fleetPanelLinkMatches_(master.getRange(parts[0], parts[1]).getFormulas()[0][0], buttons[key], '内容を確認・実行')) fail_('PANEL_AREA_CONFLICT', '旧管理リンクを識別できません。旧表を保持して停止しました。');
+  });
+}
+
+function fleetAssertManagementSheet_(sheet) {
+  if (!sheet || sheet.getLastRow() === 0) return;
+  if (sheet.getRange(2, 2).getValue() !== FLEET_ADMIN_.panel || sheet.getLastRow() > 27 || sheet.getLastColumn() > 9) {
+    fail_('PANEL_AREA_CONFLICT', '同名のシートに既存データがあります。変更せず停止しました。');
+  }
+  var labels = fleetManagementLabels_(), inputs = {}, buttons = {};
+  Object.keys(FLEET_ADMIN_.inputs).forEach(function (key) { inputs[FLEET_ADMIN_.inputs[key].join(':')] = true; });
+  fleetManagementButtons_().forEach(function (button) { buttons[button.row + ':' + button.col] = button; });
+  var range = sheet.getRange(1, 1, 27, 9), values = range.getValues(), formulas = range.getFormulas();
+  for (var row = 0; row < 27; row++) for (var col = 0; col < 9; col++) {
+    var key = (row + 1) + ':' + (col + 1), value = values[row][col], formula = formulas[row][col];
+    if (!formula && (inputs[key] || labels[key] === value)) continue;
+    if (buttons[key] && fleetPanelLinkMatches_(formula, buttons[key].operation, buttons[key].label)) continue;
+    if (!blank_(value) || formula) fail_('PANEL_AREA_CONFLICT', '管理タブに想定外の値があります。既存入力を保持して停止しました。');
+  }
+}
+
+function fleetPanelValues_(sheet, map) {
+  var values = {};
+  Object.keys(map).forEach(function (key) { values[key] = sheet ? sheet.getRange(map[key][0], map[key][1]).getValue() : ''; });
+  return values;
+}
+
+function fleetPanelSameValue_(key, left, right) {
+  if (blank_(left) && blank_(right)) return true;
+  if (key === 'inspection') { try { return dateValue_(left) === dateValue_(right); } catch (_) { return sameCell_(left, right); } }
+  if (['renameVehicle', 'stopVehicle', 'restoreVehicle'].indexOf(key) >= 0) return normalizeId_(left) === normalizeId_(right);
+  return sameCell_(left, right);
+}
+
+function fleetMergedPanelValues_(ss, sheet) {
+  var master = ss.getSheetByName(DRIVE_LOG_.master), values = fleetPanelValues_(sheet, FLEET_ADMIN_.inputs);
+  if (!fleetLegacyPanelInstalled_(master)) return values;
+  fleetValidateLegacyPanel_(master);
+  var legacy = fleetPanelValues_(master, FLEET_ADMIN_.legacyInputs);
+  Object.keys(legacy).forEach(function (key) {
+    if (blank_(legacy[key])) return;
+    if (!blank_(values[key]) && !fleetPanelSameValue_(key, values[key], legacy[key])) fail_('PANEL_AREA_CONFLICT', '新旧の管理表に異なる入力があります。両方の入力を保持して停止しました。');
+    if (blank_(values[key])) values[key] = legacy[key];
+  });
+  return values;
 }
 
 function fleetInstallPanel_(ss, url) {
-  var master = ss.getSheetByName(DRIVE_LOG_.master);
-  var labels = { 1: '社用車 管理ツール', 2: '入力後、右の「内容を確認・実行」を押してください', 3: '運転中・保存中の車両は変更できません',
-    4: '番号変更', 5: '対象車両', 6: '新しい車番', 9: '運用から外す', 10: '対象車両',
-    13: '運用に戻す', 14: '対象車両', 17: '新規追加', 18: '車番', 19: '車種', 20: '燃料',
-    21: '車検満了日', 22: '前回オイル交換時メーター (km)', 23: '初回確認時の距離 (km)', 24: '変速機 (AT/MT)' };
-  Object.keys(labels).forEach(function (row) { master.getRange(Number(row), 10).setValue(labels[row]); });
-  [[4, 'rename'], [9, 'stop'], [13, 'restore'], [17, 'add']].forEach(function (entry) {
-    master.getRange(entry[0], 14).setValue('=HYPERLINK("' + url + '&operation=' + entry[1] + '","内容を確認・実行")');
-    master.getRange(entry[0], 10, 1, 7).setBackground('#1e3a5f').setFontColor('#ffffff').setFontWeight('bold');
-    master.getRange(entry[0], 14).setBackground('#435bd3').setFontColor('#ffffff');
+  var sheet = ss.getSheetByName(FLEET_ADMIN_.panel);
+  fleetAssertManagementSheet_(sheet);
+  var values = fleetMergedPanelValues_(ss, sheet);
+  if (!sheet) sheet = ss.insertSheet(FLEET_ADMIN_.panel, ss.getSheetByName(DRIVE_LOG_.master).getIndex());
+  sheet.getRange(2, 2).setValue(FLEET_ADMIN_.panel); // An interrupted stage can be safely resumed.
+  sheet.getRange(1, 1, 27, 9).breakApart().clearFormat().setBackground('#faf9f6').setFontFamily('Arial').setFontSize(10).setFontColor('#253247').setWrap(true).setVerticalAlignment('middle');
+  [16, 116, 192, 16, 30, 116, 192, 16, 16].forEach(function (width, index) { sheet.setColumnWidth(index + 1, width); });
+  for (var row = 1; row <= 27; row++) sheet.setRowHeight(row, 24);
+  sheet.setRowHeight(2, 34); sheet.setRowHeight(21, 36);
+  sheet.setHiddenGridlines(true);
+  [[5, 2, 7, 3], [5, 6, 7, 3], [14, 2, 7, 3], [14, 6, 12, 3]].forEach(function (card) {
+    sheet.getRange(card[0], card[1], card[2], card[3]).setBackground('#ffffff').setBorder(true, true, true, true, false, false, '#e2e1dc', null);
   });
-  master.getRange(1, 10, 25, 7).setFontFamily('Arial').setFontSize(10).setWrap(true);
-  master.getRange(1, 10).setFontSize(14).setFontWeight('bold');
-  [5, 6, 10, 14, 18, 19, 20, 21, 22, 23, 24].forEach(function (row) { master.getRange(row, 11).setBackground('#edf3ff'); });
-  master.setColumnWidth(10, 210); master.setColumnWidth(11, 230); master.setColumnWidth(14, 190);
-  [12, 13, 15, 16].forEach(function (column) { master.setColumnWidth(column, 16); });
-  master.getRange(21, 11).setNumberFormat('yyyy-mm-dd');
-  [22, 23].forEach(function (row) { master.getRange(row, 11).setNumberFormat('0'); });
-  fleetRefreshPanel_(ss);
+  var labels = fleetManagementLabels_();
+  Object.keys(labels).forEach(function (key) { var parts = key.split(':').map(Number); sheet.getRange(parts[0], parts[1]).setValue(labels[key]); });
+  sheet.getRange(2, 2, 1, 7).merge().setBackground('#23334d').setFontColor('#ffffff').setFontSize(17).setFontWeight('bold');
+  [[5, 2], [5, 6], [14, 2], [14, 6]].forEach(function (position) {
+    sheet.getRange(position[0], position[1], 1, 3).merge().setBackground('#efeee9').setFontWeight('bold').setFontSize(11);
+  });
+  Object.keys(FLEET_ADMIN_.inputs).forEach(function (key) {
+    var position = FLEET_ADMIN_.inputs[key];
+    sheet.getRange(position[0], position[1]).setValue(values[key]).setBackground('#edf1f8').setBorder(false, false, true, false, false, false, '#aebbd1', null);
+  });
+  sheet.getRange(20, 7).setNumberFormat('yyyy-mm-dd');
+  [21, 22].forEach(function (row) { sheet.getRange(row, 7).setNumberFormat('0'); });
+  fleetManagementButtons_().forEach(function (button) {
+    sheet.getRange(button.row, button.col, 1, 3).merge().setValue('=HYPERLINK("' + url + '&operation=' + button.operation + '","' + button.label + '")')
+      .setBackground('#526ba5').setFontColor('#ffffff').setFontWeight('bold').setHorizontalAlignment('center');
+    sheet.setRowHeight(button.row, 32);
+  });
+  fleetRefreshPanel_(ss, sheet);
+  SpreadsheetApp.flush();
+  var saved = fleetPanelValues_(sheet, FLEET_ADMIN_.inputs);
+  if (Object.keys(values).some(function (key) { return !fleetPanelSameValue_(key, values[key], saved[key]); })) fail_('PANEL_AREA_CONFLICT', '入力の移設結果を確認できません。旧表は保持されています。');
+  fleetSetPanelMeta_(sheet, FLEET_ADMIN_.panelMetadata, 'ready');
+  SpreadsheetApp.flush();
+  return sheet;
 }
 
-function fleetRefreshPanel_(ss) {
-  var master = ss.getSheetByName(DRIVE_LOG_.master);
-  if (!fleetPanelInstalled_(master)) return;
-  var vehicles = loadVehicles_(ss);
-  function dropdown(row, values) {
-    var range = master.getRange(row, 11);
-    if (!values.length) range.clearDataValidations();
-    else range.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(values, true).setAllowInvalid(false).build());
+function fleetRefreshPanel_(ss, onlySheet) {
+  var vehicles = loadVehicles_(ss), targets = [], management = ss.getSheetByName(FLEET_ADMIN_.panel), master = ss.getSheetByName(DRIVE_LOG_.master);
+  if (onlySheet) targets.push({ sheet: onlySheet, map: FLEET_ADMIN_.inputs });
+  else {
+    if (fleetPanelInstalled_(management)) targets.push({ sheet: management, map: FLEET_ADMIN_.inputs });
+    if (fleetLegacyPanelInstalled_(master)) targets.push({ sheet: master, map: FLEET_ADMIN_.legacyInputs });
   }
   var active = vehicles.filter(function (v) { return v.active; }).map(function (v) { return v.number; });
-  dropdown(5, active); dropdown(10, active);
-  dropdown(14, vehicles.filter(function (v) { return !v.active; }).map(function (v) { return v.number; }));
-  dropdown(19, FLEET_ADMIN_.models); dropdown(20, ['ガソリン', '軽油']); dropdown(24, ['AT', 'MT']);
+  targets.forEach(function (target) {
+    function dropdown(key, list) {
+      var position = target.map[key], range = target.sheet.getRange(position[0], position[1]);
+      if (!list.length) range.clearDataValidations();
+      else range.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(list, true).setAllowInvalid(false).build());
+    }
+    dropdown('renameVehicle', active); dropdown('stopVehicle', active);
+    dropdown('restoreVehicle', vehicles.filter(function (v) { return !v.active; }).map(function (v) { return v.number; }));
+    dropdown('model', FLEET_ADMIN_.models); dropdown('fuel', ['ガソリン', '軽油']); dropdown('transmission', ['AT', 'MT']);
+  });
 }
 
 function fleetReadPanel_(ss, vehicles) {
-  var master = ss.getSheetByName(DRIVE_LOG_.master), result = { rename: {}, stop: {}, restore: {}, add: {} };
-  if (!fleetPanelInstalled_(master)) return result;
-  function value(row) { return master.getRange(row, 11).getValue(); }
-  function selected(row, active) {
-    var key = normalizeId_(value(row));
-    return vehicles.filter(function (v) { return v.active === active && normalizeId_(v.number) === key; })[0];
-  }
-  var rename = selected(5, true), stop = selected(10, true), restore = selected(14, false);
-  if (rename) result.rename = { vehicleId: rename.id, number: String(value(6) || '') };
+  var sheet = ss.getSheetByName(FLEET_ADMIN_.panel), map = FLEET_ADMIN_.inputs;
+  var result = { rename: {}, stop: {}, restore: {}, add: {} };
+  if (!fleetPanelInstalled_(sheet)) { sheet = ss.getSheetByName(DRIVE_LOG_.master); map = FLEET_ADMIN_.legacyInputs; if (!fleetLegacyPanelInstalled_(sheet)) return result; }
+  var values = fleetPanelValues_(sheet, map);
+  function selected(key, active) { return vehicles.filter(function (v) { return v.active === active && normalizeId_(v.number) === normalizeId_(values[key]); })[0]; }
+  var rename = selected('renameVehicle', true), stop = selected('stopVehicle', true), restore = selected('restoreVehicle', false);
+  if (rename) result.rename = { vehicleId: rename.id, number: String(values.renameNumber || '') };
   if (stop) result.stop = { vehicleId: stop.id, active: false };
   if (restore) result.restore = { vehicleId: restore.id, active: true };
-  if ([18, 19, 20, 21, 22, 23, 24].some(function (row) { return !blank_(value(row)); })) {
-    var inspection = value(21);
+  if (['number', 'model', 'fuel', 'inspection', 'initialOil', 'initialOdometer', 'transmission'].some(function (key) { return !blank_(values[key]); })) {
+    var inspection = values.inspection;
     try { inspection = dateValue_(inspection); } catch (_) { inspection = String(inspection || ''); }
-    result.add = { number: String(value(18) || ''), model: String(value(19) || ''), fuelType: String(value(20) || ''),
-      inspectionDue: inspection, initialOil: blank_(value(22)) ? null : value(22), initialOdometer: blank_(value(23)) ? null : value(23),
-      requiresClutch: normalizeId_(value(24)).toUpperCase() === 'MT' };
+    result.add = { number: String(values.number || ''), model: String(values.model || ''), fuelType: String(values.fuel || ''), inspectionDue: inspection,
+      initialOil: blank_(values.initialOil) ? null : values.initialOil, initialOdometer: blank_(values.initialOdometer) ? null : values.initialOdometer,
+      requiresClutch: normalizeId_(values.transmission).toUpperCase() === 'MT' };
   }
   return result;
+}
+
+// Stage two: run only after the new deployment and its dedicated tab work.
+function removeLegacyFleetPanel_() {
+  var access = fleetAdminAccess_(), lock = LockService.getScriptLock(); lock.waitLock(25000);
+  try {
+    var ss = access.ss, master = ss.getSheetByName(DRIVE_LOG_.master), sheet = ss.getSheetByName(FLEET_ADMIN_.panel);
+    if (!fleetPanelInstalled_(sheet)) fail_('FLEET_NOT_INSTALLED', '先に新しい管理タブの設置と公開を確認してください。');
+    if (fleetPendingVehicleIds_(ss).length) fail_('VEHICLE_PENDING', '保存途中の車両管理があります。保存結果を確認してから旧表を撤去してください。');
+    fleetAssertManagementSheet_(sheet);
+    var legacy = fleetLegacyPanelInstalled_(master), cleanup = fleetPanelMeta_(sheet, FLEET_ADMIN_.cleanupMetadata);
+    if (!legacy && (!cleanup || cleanup.getValue() !== 'pending')) return { removed: false, managementUrl: sheetUrl_(ss, sheet.getSheetId()) };
+    if (legacy) {
+      var previous = fleetPanelValues_(sheet, FLEET_ADMIN_.inputs);
+      var values = fleetMergedPanelValues_(ss, sheet);
+      Object.keys(values).forEach(function (key) {
+        if (blank_(previous[key]) && !blank_(values[key])) { var position = FLEET_ADMIN_.inputs[key]; sheet.getRange(position[0], position[1]).setValue(values[key]); }
+      });
+      SpreadsheetApp.flush();
+      var saved = fleetPanelValues_(sheet, FLEET_ADMIN_.inputs);
+      if (Object.keys(values).some(function (key) { return !fleetPanelSameValue_(key, values[key], saved[key]); })) fail_('PANEL_AREA_CONFLICT', '入力の引継ぎを確認できません。旧表を保持しました。');
+      fleetSetPanelMeta_(sheet, FLEET_ADMIN_.cleanupMetadata, 'pending');
+      SpreadsheetApp.flush();
+    } else {
+      var oldRange = master.getRange(1, 10, 25, 7), oldValues = oldRange.getValues(), oldFormulas = oldRange.getFormulas();
+      if (oldValues.some(function (row, index) { return row.some(function (value, col) { return !blank_(value) || !!oldFormulas[index][col]; }); })) {
+        fail_('PANEL_AREA_CONFLICT', '旧表の撤去中に別の値が追加されています。変更せず停止しました。');
+      }
+    }
+    var resetFormats = [[21, 'yyyy-mm-dd'], [22, '0'], [23, '0']].filter(function (entry) { return master.getRange(entry[0], 11).getNumberFormat() === entry[1]; });
+    master.getRange(1, 10, 25, 7).clearContent().clearFormat().clearDataValidations().breakApart();
+    resetFormats.forEach(function (entry) { master.getRange(entry[0], 11).setNumberFormat('General'); });
+    [[10, 210], [11, 230], [12, 16], [13, 16], [14, 190], [15, 16], [16, 16]].forEach(function (entry) {
+      if (master.getColumnWidth(entry[0]) === entry[1]) master.setColumnWidth(entry[0], 100);
+    });
+    SpreadsheetApp.flush();
+    fleetSetPanelMeta_(sheet, FLEET_ADMIN_.cleanupMetadata, 'done');
+    return { removed: true, managementUrl: sheetUrl_(ss, sheet.getSheetId()) };
+  } finally { try { SpreadsheetApp.flush(); } finally { lock.releaseLock(); } }
 }
