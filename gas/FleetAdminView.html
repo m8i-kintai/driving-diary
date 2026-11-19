@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>車両管理</title>
+  <style>
+    :root{color-scheme:light;--bg:#f1f7f6;--paper:#fff;--ink:#163a3a;--muted:#667d7b;--line:#d8e5e2;--teal:#087e78;--teal-dark:#08625e;--mint:#e7f5f1;--amber:#92610e;--red:#a53536;font-family:"Noto Sans JP","Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,sans-serif;font-synthesis:none}
+    *{box-sizing:border-box}body{margin:0;min-width:280px;background:var(--bg);color:var(--ink);font-size:14px;line-height:1.65}button,input,select{font:inherit}button,input,select,a{touch-action:manipulation}button{cursor:pointer}button:disabled{cursor:default;opacity:.5}button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:3px solid #59bdb3;outline-offset:3px}[hidden]{display:none!important}h1,h2,h3,p{margin:0}button{color:inherit}a{color:var(--teal-dark);text-underline-offset:4px}svg{fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+    .shell{max-width:1060px;padding:28px 28px 20px;margin:auto}.header{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:25px}.brand{display:flex;gap:14px;align-items:center}.brand-icon{display:grid;place-items:center;background:var(--teal);color:white;border-radius:16px;width:56px;height:56px;box-shadow:0 7px 18px #087e781a}.brand-icon svg{width:31px;height:31px}.eyebrow{font-size:10px;font-weight:750;letter-spacing:.18em;color:var(--teal);margin-bottom:3px}h1{font-size:27px;letter-spacing:.04em;line-height:1.35}.header-subtitle{font-size:12px;color:var(--muted);margin-top:4px}.account{text-align:right;min-width:0}.account-label{display:block;font-size:10px;color:var(--muted)}.account-email{display:block;font-size:12px;overflow-wrap:anywhere}.master-link{display:inline-flex;gap:5px;align-items:center;font-size:11px;margin-top:5px}.master-link svg{width:13px;height:13px}.status-target{border:1px solid #d4e5db;border-radius:11px;background:#f2f9f5;padding:16px;margin-top:12px}.status-target strong{display:block;font-size:16px;color:var(--teal-dark)}.status-target p{font-size:11px;color:var(--muted);margin-top:4px}
+    .notice{border:1px solid var(--line);border-radius:12px;padding:13px 15px;background:#fff;margin-bottom:16px;font-size:12px;overflow-wrap:anywhere}.notice strong{font-size:13px}.notice p+ p{margin-top:5px}.notice-info{display:flex;gap:12px;justify-content:space-between;align-items:center;background:#edf7f4;border-color:#c7e2da}.notice-info button{flex-shrink:0}.notice-error{background:#fff3f2;border-color:#edc8c5;color:#8d3031}.notice-pending{background:#fff9eb;border-color:#e8d8aa;color:#75531b}.notice-pending p{margin-top:6px}.notice-pending .button{margin-top:13px}.text-button{border:0;background:transparent;color:var(--teal-dark);font-size:11px;font-weight:700;padding:7px 3px;white-space:nowrap}.section-note{color:var(--muted);font-size:12px;line-height:1.7}
+    .tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid #cbdeda;border-radius:13px;padding:5px;background:#e6f0ed;gap:5px;margin-bottom:20px}.tab{display:flex;align-items:center;justify-content:center;gap:7px;min-height:47px;padding:9px 6px;background:transparent;border:0;border-radius:9px;font-size:13px;font-weight:700;white-space:nowrap;color:#56716d}.tab svg{width:18px;height:18px}.tab[aria-selected=true]{background:#fff;color:var(--teal-dark);box-shadow:0 2px 7px #12433a0b}.tab:disabled{opacity:.48}.workspace{display:grid;grid-template-columns:minmax(230px,.85fr) minmax(0,1.65fr);align-items:start;gap:19px}.workspace.is-add{grid-template-columns:1fr}.panel{background:var(--paper);border:1px solid var(--line);border-radius:17px;box-shadow:0 6px 22px #153f3405;overflow:hidden}.panel-pad{padding:24px}.fleet-picker{padding:18px 15px 15px}.picker-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}.picker-heading h2{font-size:15px}.fleet-count{font-size:10px;color:var(--muted);white-space:nowrap}.search-box{position:relative}.search-box svg{width:17px;height:17px;position:absolute;left:12px;top:13px;color:#7a9590}.search-box input{padding-left:37px;font-size:13px;background:#f6f9f8}.search-help{font-size:10px;color:var(--muted);margin:7px 1px 12px}.vehicle-list{list-style:none;padding:2px;margin:0;display:flex;flex-direction:column;gap:7px;max-height:430px;overflow-y:auto;overscroll-behavior:contain}.vehicle-option{display:block;text-align:left;width:100%;padding:11px 12px;border:1px solid #e0e9e6;background:white;border-radius:11px}.vehicle-option[aria-pressed=true]{background:#eaf6f2;border-color:#52a998;box-shadow:inset 3px 0 0 var(--teal)}.vehicle-option:disabled{opacity:.7}.vehicle-option-top{display:flex;align-items:center;justify-content:space-between;gap:6px}.vehicle-number{font-size:12px;font-weight:750;overflow-wrap:anywhere}.vehicle-model{display:block;font-size:10px;color:var(--muted);margin-top:3px}.badge{display:inline-flex;align-items:center;gap:4px;flex-shrink:0;font-size:9px;font-weight:700;border-radius:100px;padding:2px 7px;white-space:nowrap;background:#e8f5ee;color:#2c7a5a;border:1px solid #c7e5d5}.badge::before{content:"";width:4px;height:4px;border-radius:50%;background:currentColor}.badge.is-inactive{background:#f1f2f2;color:#7c8986;border-color:#dce2df}.empty-list{padding:27px 8px;text-align:center;font-size:12px;color:var(--muted)}.picker-footer{border-top:1px solid #e6eeeb;padding:12px 1px 0;margin-top:13px;font-size:10px;color:var(--muted)}
+    .step-label{font-size:10px;letter-spacing:.12em;font-weight:750;color:var(--teal);margin-bottom:8px}.panel-title{font-size:22px;line-height:1.4;letter-spacing:.015em;margin-bottom:7px}.panel-description{font-size:12px;color:var(--muted);line-height:1.8}.selected-card{display:flex;align-items:center;gap:12px;padding:14px 15px;border:1px solid #dce9e4;border-radius:12px;background:#f4f9f7;margin:21px 0}.selected-card>svg{width:30px;height:30px;color:#72988d}.selected-content{min-width:0;flex:1}.selected-number{font-size:16px;font-weight:750;overflow-wrap:anywhere}.selected-meta{font-size:11px;color:var(--muted);margin-top:2px}.selected-card .badge{font-size:10px}.selected-link{font-size:10px;display:inline-block;margin-top:5px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:17px 16px;margin-top:22px}.field{display:flex;flex-direction:column;gap:7px;min-width:0}.field-wide{grid-column:1/-1}.field-label{font-size:12px;font-weight:750;display:flex;align-items:center;gap:6px}.required{font-size:9px;font-weight:700;border-radius:4px;padding:0 5px;background:#e3f3ee;color:#297865}.optional{font-size:9px;font-weight:400;color:#7e938d}.field-help{font-size:10px;color:var(--muted);line-height:1.65}.field-help:empty{display:none}input,select{color:var(--ink);border:1px solid #c9dcd5;border-radius:9px;width:100%;min-width:0;min-height:46px;padding:11px 12px;background:#fff;font-size:16px;line-height:1.35}input::placeholder{color:#9baca7;font-size:13px}input:disabled,select:disabled{background:#f1f5f3;color:#637d74;opacity:.8}select{padding-right:26px}input[type=number]{font-variant-numeric:tabular-nums}.unit-field{position:relative}.unit-field input{padding-right:39px}.unit-field>span{position:absolute;right:13px;top:12px;font-size:12px;color:var(--muted)}.input-section{margin-top:20px}.input-section .field+.field{margin-top:15px}fieldset{border:0;padding:0;margin:0;min-width:0}legend{padding:0}.status-options{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:9px}.status-option{position:relative;display:flex;align-items:flex-start;gap:10px;cursor:pointer;border:1px solid #d3e1db;border-radius:12px;padding:14px 11px;background:#fff}.status-option:has(input:checked){border-color:#438f7d;background:#edf7f2}.status-option input{width:17px;min-height:17px;height:17px;margin:3px 0 0;accent-color:var(--teal);flex-shrink:0;padding:0}.status-option strong{display:block;font-size:12px}.status-option small{display:block;font-size:10px;color:var(--muted);margin-top:4px;line-height:1.7}.check-option{display:flex;align-items:flex-start;gap:10px;cursor:pointer;border:1px solid #d7e5de;border-radius:10px;padding:13px 14px;background:#f8fbf9}.check-option input{width:18px;height:18px;min-height:18px;padding:0;accent-color:var(--teal);flex-shrink:0;margin:2px 0 0}.check-option strong{font-size:12px;font-weight:650;display:block}.check-option small{display:block;font-size:10px;color:var(--muted);line-height:1.7;margin-top:3px}.impact-note{display:flex;align-items:flex-start;gap:9px;padding:13px 14px;border-radius:10px;background:#f1f7f4;color:#58786c;font-size:11px;line-height:1.8;margin-top:22px}.impact-note svg{width:17px;height:17px;margin-top:1px}.actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;border-top:1px solid #e5eeea;margin-top:25px;padding-top:20px}.button{display:inline-flex;justify-content:center;align-items:center;gap:7px;border:1px solid transparent;min-height:46px;padding:11px 19px;border-radius:9px;font-weight:750;font-size:12px;text-decoration:none}.button svg{width:16px;height:16px}.button-primary{background:var(--teal);border-color:var(--teal);color:white;box-shadow:0 3px 8px #087e7814}.button-primary:hover:enabled{background:var(--teal-dark);border-color:var(--teal-dark)}.button-secondary{background:white;border-color:#cbded5;color:#42695a}.button-secondary:hover:enabled{background:#f0f7f3}.button-danger{background:#886332;color:white}.form-caption{font-size:10px;color:var(--muted);margin-right:auto}.review-panel,.pending-panel,.success-panel{max-width:750px;margin:0 auto}.review-heading{display:flex;align-items:flex-start;gap:13px;margin-bottom:22px}.review-icon{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;color:var(--teal);background:var(--mint);flex-shrink:0}.review-icon svg{width:22px;height:22px}.review-list{margin:0;border-top:1px solid var(--line)}.review-item{display:grid;grid-template-columns:155px 1fr;gap:15px;border-bottom:1px solid #e3ece7;padding:12px 2px}.review-item dt{font-size:11px;color:var(--muted)}.review-item dd{margin:0;font-size:13px;font-weight:650;overflow-wrap:anywhere;white-space:pre-wrap}.review-number{font-size:17px!important;color:var(--teal-dark)}.review-note{margin:18px 0;font-size:12px;color:#546f62;line-height:1.85;background:#eff7f2;padding:14px;border-radius:10px}.review-check{margin-top:19px}.result-icon{display:grid;place-items:center;width:64px;height:64px;margin:5px auto 19px;border-radius:50%;background:#e8f6ed;color:#2c8760}.result-icon svg{width:33px;height:33px}.success-panel{text-align:center}.success-number{font-size:20px;font-weight:750;margin:15px 0 6px}.success-copy{font-size:12px;color:var(--muted);margin-bottom:24px}.success-actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap}.loading{text-align:center;padding:65px 15px}.spinner{display:block;width:30px;height:30px;border:2px solid #d6e7df;border-top-color:var(--teal);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 18px}.loading h2{font-size:16px;margin-bottom:7px}.loading p{font-size:12px;color:var(--muted)}.footer{display:flex;justify-content:space-between;gap:10px;margin-top:23px;color:#83988e;font-size:10px}.footer button{padding:0;min-height:25px;font-size:10px}.footer p{padding:4px 0}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}@keyframes spin{to{transform:rotate(360deg)}}
+    @media(max-width:740px){.shell{padding:20px 16px}.header{align-items:flex-start;gap:12px;margin-bottom:20px}.brand-icon{width:46px;height:46px;border-radius:13px}.brand-icon svg{width:27px;height:27px}.brand{gap:10px}h1{font-size:24px}.header-subtitle{display:none}.account{max-width:42%}.account-email{font-size:10px}.master-link{font-size:10px}.workspace{grid-template-columns:1fr}.fleet-picker{padding:15px}.vehicle-list{max-height:220px}.picker-footer{display:none}.panel-pad{padding:21px}.panel-title{font-size:21px}.tabs{margin-bottom:16px;grid-template-columns:repeat(2,minmax(0,1fr))}.tab{font-size:11px;gap:5px;min-height:44px}.tab svg{width:16px;height:16px}.notice-info{align-items:flex-start;font-size:11px}.form-grid{gap:16px 13px}.review-item{grid-template-columns:125px 1fr;gap:12px}.footer{margin-top:18px}.loading{padding:50px 10px}}
+    @media(max-width:400px){.shell{padding:16px 12px}.brand-icon{display:none}.eyebrow{font-size:9px}.panel-pad{padding:19px 16px}.tabs{padding:4px;gap:2px}.tab{font-size:10px;gap:4px}.tab svg{display:none}.form-grid{grid-template-columns:1fr}.field-wide{grid-column:auto}.status-options{grid-template-columns:1fr}.review-item{grid-template-columns:1fr;gap:2px;padding:10px 1px}.actions{flex-wrap:wrap}.actions .button{flex:1;min-width:120px}.form-caption{width:100%;text-align:center}.success-actions .button{width:100%}.notice-info{display:block}.notice-info button{margin-top:4px}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;scroll-behavior:auto!important}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="header">
+      <div class="brand"><span class="brand-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 16V9l3-5h12l3 5v7M3 10h18M5 16v3m14-3v3M2 16h20M7 13h1m8 0h1"/></svg></span><div><p class="eyebrow">VEHICLE MANAGEMENT</p><h1>車両管理</h1><p class="header-subtitle">登録・番号変更・運用の切り替えを、ひとつの画面で。</p></div></div>
+      <div id="account" class="account" hidden><span class="account-label">管理者</span><span id="admin-email" class="account-email"></span><a id="master-link" class="master-link" target="_blank" rel="noopener noreferrer" hidden>スプレッドシートに戻る <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M14 3h7v7m0-7L10 14M10 3H3v18h18v-7"/></svg></a></div>
+    </header>
+    <aside id="first-notice" class="notice notice-info" hidden><p>初回のみ、管理者のGoogleアカウントで権限の確認が必要です。</p><button id="dismiss-notice" class="text-button" type="button">確認しました</button></aside>
+    <div id="global-message" class="notice notice-error" role="alert" hidden></div>
+    <section id="loading" class="loading" aria-live="polite"><span class="spinner" aria-hidden="true"></span><h2 id="loading-title">車両情報を読み込んでいます</h2><p id="loading-description">しばらくお待ちください。</p><button id="boot-retry" class="button button-secondary" type="button" style="margin-top:18px" hidden>もう一度読み込む</button></section>
+    <div id="app-content" hidden>
+      <nav id="operation-tabs" class="tabs" role="tablist" aria-label="管理する内容">
+        <button id="tab-rename" class="tab" type="button" role="tab" aria-selected="true" aria-controls="panel-rename" tabindex="0" data-operation="rename"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m15 5 4 4M3 21l5-1L21 7l-4-4L4 16l-1 5Z"/></svg>番号変更</button>
+        <button id="tab-stop" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-status" tabindex="-1" data-operation="stop"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></svg>運用から外す</button>
+        <button id="tab-restore" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-status" tabindex="-1" data-operation="restore"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6"/></svg>運用に戻す</button>
+        <button id="tab-add" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-add" tabindex="-1" data-operation="add"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>新規追加</button>
+      </nav>
+      <div id="workspace" class="workspace">
+        <aside id="fleet-picker" class="panel fleet-picker" aria-labelledby="picker-title">
+          <div class="picker-heading"><h2 id="picker-title">車両を選ぶ</h2><span id="fleet-count" class="fleet-count" aria-live="polite"></span></div>
+          <label class="sr-only" for="vehicle-search">車両ナンバーを検索</label><div class="search-box"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></svg><input id="vehicle-search" type="search" autocomplete="off" placeholder="ナンバーで検索"></div>
+          <p class="search-help">運用から外した車両も表示しています。</p><ul id="vehicle-list" class="vehicle-list" aria-label="登録車両"></ul><p id="vehicle-empty" class="empty-list" hidden>該当する車両がありません。</p><p class="picker-footer">対象の車両を選んでから、変更内容を入力してください。</p>
+        </aside>
+        <div id="editor" class="panel panel-pad">
+          <section id="panel-rename" role="tabpanel" aria-labelledby="tab-rename">
+            <p class="step-label">STEP 1 / 入力</p><h2 class="panel-title">車両ナンバーを変更</h2><p class="panel-description">車両と過去の日報を引き継いで、ナンバーを更新します。</p>
+            <div class="selected-card"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 16V9l3-5h12l3 5v7M3 10h18M5 16v3m14-3v3M2 16h20"/></svg><div class="selected-content"><p class="selected-number" data-selected-number>車両を選択してください</p><p class="selected-meta" data-selected-meta></p><a class="selected-link" data-selected-link target="_blank" rel="noopener noreferrer" hidden>この車両の日報を開く ↗</a></div><span class="badge" data-selected-status hidden></span></div>
+            <form id="rename-form"><fieldset id="rename-fields"><div class="field"><label class="field-label" for="rename-number">変更後のナンバー <span class="required">必須</span></label><input id="rename-number" name="number" type="text" required maxlength="64" autocomplete="off" placeholder="例：春日井483え32"><p class="field-help">地域名・分類番号・ひらがなを含めて入力してください。</p></div><div class="impact-note"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 3h.01"/></svg><p>専用の日報シートと一覧のリンクも、新しいナンバーに合わせて更新します。過去の日報は保持されます。</p></div><div class="actions"><span class="form-caption">次の画面で内容を確認します</span><button class="button button-primary" type="submit">変更内容を確認 <span aria-hidden="true">→</span></button></div></fieldset></form>
+          </section>
+          <section id="panel-status" role="tabpanel" aria-labelledby="tab-stop" hidden>
+            <p class="step-label">STEP 1 / 入力</p><h2 id="status-title" class="panel-title">運用から外す</h2><p id="status-description" class="panel-description">対象の車両を、アプリの車両選択から外します。</p>
+            <div class="selected-card"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 16V9l3-5h12l3 5v7M3 10h18M5 16v3m14-3v3M2 16h20"/></svg><div class="selected-content"><p class="selected-number" data-selected-number>車両を選択してください</p><p class="selected-meta" data-selected-meta></p><a class="selected-link" data-selected-link target="_blank" rel="noopener noreferrer" hidden>この車両の日報を開く ↗</a></div><span class="badge" data-selected-status hidden></span></div>
+            <form id="status-form"><fieldset id="status-fields"><div class="status-target"><strong id="status-target-title">運用から外す</strong><p id="status-target-description">運転日報アプリで、この車両を選択できなくなります。</p></div><div class="impact-note"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6"/></svg><p>運用から外しても、過去の日報は削除されません。「運用に戻す」から、いつでも戻せます。</p></div><div class="actions"><span class="form-caption">次の画面で内容を確認します</span><button class="button button-primary" type="submit">変更内容を確認 <span aria-hidden="true">→</span></button></div></fieldset></form>
+          </section>
+          <section id="panel-add" role="tabpanel" aria-labelledby="tab-add" hidden>
+            <p class="step-label">STEP 1 / 入力</p><h2 class="panel-title">新しい車両を登録</h2><p class="panel-description">車両を追加し、専用の日報シートと一覧のリンクを自動で作成します。</p>
+            <form id="add-form"><fieldset id="add-fields"><div class="form-grid">
+              <div class="field field-wide"><label class="field-label" for="add-number">車両ナンバー <span class="required">必須</span></label><input id="add-number" type="text" required maxlength="64" autocomplete="off" placeholder="例：春日井483え32"></div>
+              <div class="field"><label class="field-label" for="add-model">車種 <span class="required">必須</span></label><select id="add-model" required><option value="">選択してください</option></select></div>
+              <div class="field"><label class="field-label" for="add-fuel">燃料 <span class="required">必須</span></label><select id="add-fuel" required><option value="">選択してください</option></select></div>
+              <div class="field"><label class="field-label" for="add-odometer">初回メーター <span class="required">必須</span></label><div class="unit-field"><input id="add-odometer" type="number" required min="0" step="1" inputmode="numeric" placeholder="登録時のメーター値"><span>km</span></div><p class="field-help">登録する時点の距離です。0kmも入力できます。</p></div>
+              <div class="field"><label class="field-label" for="add-oil">前回オイル交換時のメーター <span class="optional">任意</span></label><div class="unit-field"><input id="add-oil" type="number" min="0" step="1" inputmode="numeric" placeholder="分からなければ空欄"><span>km</span></div><p class="field-help">不明な場合は空欄で登録できます。</p></div>
+              <div class="field"><label class="field-label" for="add-inspection">車検満了日 <span class="optional">任意</span></label><input id="add-inspection" type="date"></div>
+              <div class="field"><span class="field-label">変速機 <span class="optional">任意</span></span><label class="check-option"><input id="add-clutch" type="checkbox"><span><strong>マニュアル車（MT）</strong><small>運転前点検にクラッチを追加します。</small></span></label></div>
+            </div><div class="impact-note"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6m-6 4h6m-6 4h3"/></svg><p>運転日報ひな形をコピーして、この車両専用の日報を作成します。登録後は「運用中」の状態になります。</p></div><div class="actions"><span class="form-caption">次の画面で内容を確認します</span><button class="button button-primary" type="submit">登録内容を確認 <span aria-hidden="true">→</span></button></div></fieldset></form>
+          </section>
+        </div>
+      </div>
+      <section id="review-panel" class="panel panel-pad review-panel" aria-labelledby="review-title" hidden>
+        <div class="review-heading"><span class="review-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/><path d="M20 12v8H4V4h10"/></svg></span><div><p class="step-label">STEP 2 / 確認</p><h2 id="review-title" class="panel-title" tabindex="-1">この内容で変更しますか？</h2><p class="panel-description">まだ保存されていません。内容を確認して実行してください。</p></div></div>
+        <dl id="review-list" class="review-list"></dl><p id="review-note" class="review-note"></p><a id="review-sheet-link" class="selected-link" target="_blank" rel="noopener noreferrer" hidden>現在の日報を開いて確認 ↗</a>
+        <label class="check-option review-check"><input id="review-confirmed" type="checkbox"><span><strong>上の内容を確認しました</strong></span></label><div class="actions"><button id="review-back" class="button button-secondary" type="button">入力に戻る</button><button id="apply-button" class="button button-primary" type="button" disabled>この内容で変更する</button></div>
+      </section>
+      <section id="pending-panel" class="panel panel-pad pending-panel" aria-labelledby="pending-title" hidden>
+        <div class="notice notice-pending"><strong id="pending-title" tabindex="-1">保存結果の確認が必要です</strong><p id="pending-description">送信した内容を保持しています。結果が分かるまで、変更内容は編集できません。</p><p id="pending-storage-note" hidden>この画面を閉じずに、保存結果を確認してください。</p></div><dl id="pending-list" class="review-list"></dl><button id="pending-retry" class="button button-primary" type="button" style="width:100%;margin-top:22px">同じ内容で保存結果を確認</button><p class="section-note" style="margin-top:12px">同じ送信内容で確認するため、重複した登録を防げます。</p>
+      </section>
+      <section id="success-panel" class="panel panel-pad success-panel" aria-labelledby="success-title" hidden><span class="result-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg></span><h2 id="success-title" class="panel-title" tabindex="-1">保存しました</h2><p id="success-number" class="success-number"></p><p class="success-copy">社用車一覧への反映が完了しました。</p><div class="success-actions"><a id="success-sheet-link" class="button button-secondary" target="_blank" rel="noopener noreferrer" hidden>日報を開く ↗</a><button id="continue-button" class="button button-primary" type="button">続けて管理する</button></div></section>
+      <footer class="footer"><p>記録済みの日報は削除されません。</p><button id="reload-button" class="text-button" type="button">車両一覧を更新</button></footer>
+    </div>
+  </main>
+  <script>
+    'use strict';
+    (function () {
+      const $ = id => document.getElementById(id);
+      const operations = ['rename', 'setStatus', 'add'];
+      const views = ['rename','stop','restore','add'];
+      const safeFailures = new Set(['VALIDATION_ERROR','UNAUTHORIZED','FORBIDDEN','BUSY','VEHICLE_NOT_FOUND','VEHICLE_IN_USE','VEHICLE_PENDING','DUPLICATE_VEHICLE_NUMBER','SHEET_NAME_CONFLICT','FLEET_NOT_INSTALLED','REVISION_CONFLICT','REQUEST_ID_REUSED','SCHEMA_ERROR']);
+      const state = {data:null,operation:'rename',selectedId:'',review:null,pending:null,busy:false,screen:'editor',pendingSaved:false,storageKey:'',noticeDismissed:false,panelViewsApplied:new Set(),viewSelections:{}};
+      const copy = value => JSON.parse(JSON.stringify(value));
+      function freeze(value) { if(value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); } return value; }
+      function uuid() {
+        if(window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+        if(!window.crypto || !window.crypto.getRandomValues) throw issue('UNSUPPORTED_BROWSER','このブラウザを更新してから開き直してください。');
+        const bytes=window.crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;
+        const hex=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
+        return hex.slice(0,8)+'-'+hex.slice(8,12)+'-'+hex.slice(12,16)+'-'+hex.slice(16,20)+'-'+hex.slice(20);
+      }
+      function issue(code,message,details) { return Object.assign(new Error(message),{code:code},details || {}); }
+      function rpc(request) {
+        return new Promise((resolve,reject) => {
+          let settled=false;
+          const finish=(fn,value)=>{if(settled)return;settled=true;clearTimeout(timer);fn(value);};
+          const timer=setTimeout(()=>finish(reject,issue('TIMEOUT','応答を確認できませんでした。')),30000);
+          if(navigator.onLine === false) return finish(reject,issue('NETWORK_ERROR','インターネット接続を確認してください。'));
+          if(!window.google || !google.script || !google.script.run) return finish(reject,issue('CLIENT_UNAVAILABLE','スプレッドシートの「車両管理」から開いてください。'));
+          try {
+            google.script.run.withSuccessHandler(response => {
+              if(!response || typeof response.ok !== 'boolean' || (response.requestId && response.requestId !== request.requestId)) return finish(reject,issue('INVALID_RESPONSE','応答を確認できませんでした。'));
+              if(response.ok) return finish(resolve,response.data);
+              const error=response.error || {};
+              finish(reject,issue(String(error.code || 'UNKNOWN'),String(error.message || '処理を完了できませんでした。'),{commitState:error.commitState || response.commitState || ''}));
+            }).withFailureHandler(() => finish(reject,issue('UNKNOWN','通信結果を確認できませんでした。'))).fleetAdminRpc(request);
+          } catch (_) { finish(reject,issue('UNKNOWN','通信結果を確認できませんでした。')); }
+        });
+      }
+      function sheetLink(element,value) {
+        let url;
+        try { url=new URL(String(value || '')); } catch (_) { element.hidden=true;element.removeAttribute('href');return; }
+        if(url.protocol !== 'https:' || url.hostname !== 'docs.google.com' || !url.pathname.startsWith('/spreadsheets/d/')) {element.hidden=true;element.removeAttribute('href');return;}
+        element.href=url.href;element.hidden=false;
+      }
+      function text(element,value) { element.textContent=value === null || value === undefined ? '' : String(value); }
+      function showMessage(message) { text($('global-message'),message);$('global-message').hidden=!message; }
+      function errorMessage(error) { return error && error.message ? String(error.message).slice(0,600) : '処理を完了できませんでした。'; }
+      function vehicle() { return state.data && state.data.vehicles.find(item=>item.id === state.selectedId); }
+      function badge(element,active) { text(element,active ? '運用中' : '運用外');element.classList.toggle('is-inactive',!active);element.hidden=false; }
+      function normalized(value) { return String(value || '').normalize('NFKC').replace(/\s/g,'').toLowerCase(); }
+      function scopeKey(data) { return 'fleet-admin.pending.v1:'+encodeURIComponent(data.adminEmail)+':'+encodeURIComponent(data.masterUrl); }
+      function savePending() {
+        state.pendingSaved=false;
+        try { sessionStorage.setItem(state.storageKey,JSON.stringify(state.pending));state.pendingSaved=true; } catch (_) { /* current screen retains the immutable request */ }
+      }
+      function restorePending() {
+        if(state.pending) return;
+        let saved;
+        try { saved=JSON.parse(sessionStorage.getItem(state.storageKey) || 'null'); } catch (_) { return; }
+        if(!saved || saved.adminEmail !== state.data.adminEmail || saved.masterUrl !== state.data.masterUrl) return;
+        const request=saved.request;
+        if(!request || request.version !== 1 || request.action !== 'apply' || !operations.includes(request.operation) || typeof request.requestId !== 'string' || !request.requestId || typeof request.payload !== 'object' || !request.payload || !saved.summary) return;
+        state.pending=freeze(copy(saved));state.pendingSaved=true;state.operation=request.operation === 'setStatus' ? (request.payload.active ? 'restore' : 'stop') : request.operation;fillForm(state.operation,request.payload);renderVehicles();state.screen='pending';
+      }
+      function clearPending() { try { sessionStorage.removeItem(state.storageKey); } catch (_) {} state.pending=null;state.pendingSaved=false; }
+      function locked() { return state.busy || Boolean(state.pending) || state.screen !== 'editor'; }
+      function updateControls() {
+        const lock=locked();
+        document.querySelectorAll('[role=tab]').forEach(tab=>{tab.disabled=lock;});
+        $('vehicle-search').disabled=lock;
+        document.querySelectorAll('.vehicle-option').forEach(button=>{button.disabled=lock;});
+        $('rename-fields').disabled=lock || !vehicle();$('status-fields').disabled=lock || !vehicle();$('add-fields').disabled=lock;
+        $('review-back').disabled=state.busy || Boolean(state.pending);
+        $('review-confirmed').disabled=state.busy || Boolean(state.pending);
+        $('apply-button').disabled=state.busy || Boolean(state.pending) || !$('review-confirmed').checked;
+        $('pending-retry').disabled=state.busy;
+        $('pending-retry').textContent=state.busy ? '保存結果を確認しています…' : '同じ内容で保存結果を確認';
+        $('reload-button').disabled=state.busy || Boolean(state.pending) || state.screen !== 'editor';
+        $('continue-button').disabled=state.busy;
+        $('app-content').setAttribute('aria-busy',String(state.busy));
+      }
+      function renderVehicles() {
+        const query=normalized($('vehicle-search').value);
+        const vehicles=state.data.vehicles.filter(item=>normalized(item.number).includes(query));
+        const list=$('vehicle-list');list.replaceChildren();
+        text($('fleet-count'),vehicles.length+' / '+state.data.vehicles.length+'台');
+        vehicles.forEach(item=>{
+          const row=document.createElement('li'),button=document.createElement('button'),top=document.createElement('span'),number=document.createElement('span'),status=document.createElement('span'),model=document.createElement('span');
+          button.type='button';button.className='vehicle-option';button.setAttribute('aria-pressed',String(item.id === state.selectedId));button.disabled=locked();top.className='vehicle-option-top';number.className='vehicle-number';text(number,item.number);status.className='badge';badge(status,item.active !== false);top.append(number,status);model.className='vehicle-model';text(model,[item.model,item.fuelType].filter(Boolean).join(' / '));button.append(top,model);
+          button.addEventListener('click',()=>{if(locked())return;state.selectedId=item.id;state.viewSelections[state.operation]=item.id;renderVehicles();renderSelected(true);showMessage('');updateControls();});
+          row.append(button);list.append(row);
+        });
+        $('vehicle-empty').hidden=vehicles.length > 0;
+      }
+      function renderSelected(resetValues) {
+        const selected=vehicle();
+        document.querySelectorAll('[data-selected-number]').forEach(element=>text(element,selected ? selected.number : '車両を選択してください'));
+        document.querySelectorAll('[data-selected-meta]').forEach(element=>text(element,selected ? [selected.model,selected.fuelType].filter(Boolean).join(' / ') : '左の一覧から対象を選んでください。'));
+        document.querySelectorAll('[data-selected-status]').forEach(element=>{if(selected)badge(element,selected.active !== false);else element.hidden=true;});
+        document.querySelectorAll('[data-selected-link]').forEach(element=>sheetLink(element,selected && selected.sheetUrl));
+        if(resetValues) {
+          $('rename-number').value=selected ? selected.number : '';
+
+        }
+      }
+      function renderEditor() {
+        document.querySelectorAll('[role=tab]').forEach(tab=>{const selected=tab.dataset.operation === state.operation;tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected ? 0 : -1;});
+        $('panel-rename').hidden=state.operation !== 'rename';$('panel-status').hidden=!['stop','restore'].includes(state.operation);$('panel-add').hidden=state.operation !== 'add';
+        $('workspace').classList.toggle('is-add',state.operation === 'add');$('fleet-picker').hidden=state.operation === 'add';
+        if(['stop','restore'].includes(state.operation)) {
+          const restoring=state.operation === 'restore';const title=restoring ? '運用に戻す' : '運用から外す';
+          $('panel-status').setAttribute('aria-labelledby',restoring ? 'tab-restore' : 'tab-stop');text($('status-title'),title);text($('status-target-title'),title);
+          text($('status-description'),restoring ? '対象の車両を、アプリで再び選べる状態に戻します。' : '対象の車両を、アプリの車両選択から外します。');
+          text($('status-target-description'),restoring ? '運転日報アプリで、この車両を再び選択できるようになります。' : '運転日報アプリで、この車両を選択できなくなります。');
+        }
+      }
+      function renderScreen() {
+        $('workspace').hidden=state.screen !== 'editor';$('review-panel').hidden=state.screen !== 'review';$('pending-panel').hidden=state.screen !== 'pending';$('success-panel').hidden=state.screen !== 'success';
+        $('operation-tabs').hidden=state.screen === 'success';
+        renderEditor();updateControls();
+      }
+      function applySheetPanel(view) {
+        if(state.panelViewsApplied.has(view))return;
+        state.panelViewsApplied.add(view);
+        fillForm(view,(state.data.panel && state.data.panel[view]) || {});
+      }
+      function fillForm(view,panel) {
+        if(view !== 'add') {
+          state.selectedId=typeof panel.vehicleId === 'string' && state.data.vehicles.some(item=>item.id === panel.vehicleId) ? panel.vehicleId : '';
+          state.viewSelections[view]=state.selectedId;renderSelected(true);
+          if(view === 'rename' && Object.prototype.hasOwnProperty.call(panel,'number'))$('rename-number').value=String(panel.number || '');
+          return;
+        }
+        const put=(id,value)=>{$(id).value=value === null || value === undefined ? '' : String(value);};
+        put('add-number',panel.number);put('add-model',panel.model);put('add-fuel',panel.fuelType);put('add-inspection',panel.inspectionDue);put('add-oil',panel.initialOil);put('add-odometer',panel.initialOdometer);$('add-clutch').checked=panel.requiresClutch === true;
+      }
+      function requestedView() {
+        return new Promise(resolve=>{
+          let finished=false;
+          const finish=value=>{if(finished)return;finished=true;clearTimeout(timer);resolve(views.includes(value) ? value : 'rename');};
+          const timer=setTimeout(()=>finish('rename'),3000);
+          try {
+            if(window.google && google.script && google.script.url && typeof google.script.url.getLocation === 'function')google.script.url.getLocation(location=>{const parameters=(location && location.parameter) || {};finish(parameters.operation || parameters.op);});
+            else finish(new URLSearchParams(window.location.search).get('operation'));
+          } catch (_) {finish('rename');}
+        });
+      }
+      function selectOptions(element,values) {
+        const selected=element.value;element.replaceChildren();const placeholder=document.createElement('option');placeholder.value='';placeholder.textContent='選択してください';element.append(placeholder);
+        values.forEach(value=>{const option=document.createElement('option');option.value=String(value);option.textContent=String(value);element.append(option);});
+        if(values.includes(selected))element.value=selected;
+      }
+      async function loadBootstrap() {
+        if(state.busy || state.pending) return;
+        const initial=!state.data;state.busy=true;showMessage('');$('boot-retry').hidden=true;
+        if(initial){$('loading').hidden=false;$('app-content').hidden=true;text($('loading-title'),'車両情報を読み込んでいます');text($('loading-description'),'しばらくお待ちください。');}
+        updateControls();
+        try {
+          const data=await rpc({version:1,action:'bootstrap',requestId:uuid()});
+          if(!data || typeof data.adminEmail !== 'string' || !data.adminEmail || !Array.isArray(data.vehicles) || !Array.isArray(data.models) || !Array.isArray(data.fuels) || typeof data.masterUrl !== 'string') throw issue('INVALID_RESPONSE','車両情報を確認できませんでした。');
+          state.data=data;state.storageKey=scopeKey(data);
+          if(!data.vehicles.some(item=>item.id === state.selectedId))state.selectedId='';
+          text($('admin-email'),data.adminEmail);$('account').hidden=false;sheetLink($('master-link'),data.masterUrl);
+          try { $('first-notice').hidden=state.noticeDismissed || localStorage.getItem('fleet-admin.notice.v1:'+data.adminEmail) === 'seen'; } catch (_) { $('first-notice').hidden=state.noticeDismissed; }
+          selectOptions($('add-model'),data.models);selectOptions($('add-fuel'),data.fuels);renderSelected(initial);applySheetPanel(state.operation);renderVehicles();
+          restorePending();
+          if(state.pending){renderSummary($('pending-list'),state.pending.summary);$('pending-storage-note').hidden=state.pendingSaved;}
+          $('loading').hidden=true;$('app-content').hidden=false;
+        } catch(error) {
+          if(initial){text($('loading-title'),'車両情報を読み込めませんでした');text($('loading-description'),errorMessage(error));$('boot-retry').hidden=false;$('loading').querySelector('.spinner').hidden=true;}
+          else showMessage(errorMessage(error));
+        } finally {state.busy=false;renderScreen();}
+      }
+      function payloadFor(operation) {
+        if(operation === 'add') return {number:$('add-number').value.trim(),model:$('add-model').value,fuelType:$('add-fuel').value,inspectionDue:$('add-inspection').value,initialOil:$('add-oil').value === '' ? null : Number($('add-oil').value),initialOdometer:$('add-odometer').value === '' ? null : Number($('add-odometer').value),requiresClutch:$('add-clutch').checked};
+        if(!vehicle())throw issue('VALIDATION_ERROR','対象の車両を選択してください。');
+        if(operation === 'rename')return {vehicleId:state.selectedId,number:$('rename-number').value.trim()};
+        return {vehicleId:state.selectedId,active:state.operation === 'restore'};
+      }
+      function operationLabel(operation,active) { return operation === 'add' ? '新規追加' : operation === 'rename' ? '番号変更' : active ? '運用に戻す' : '運用から外す'; }
+      function distance(value) { return value === null || value === undefined || value === '' ? '未登録' : Number(value).toLocaleString('ja-JP')+' km'; }
+      function renderSummary(container,summary) {
+        const rows=[['操作',operationLabel(summary.operation,summary.active)]];
+        if(summary.operation === 'rename')rows.push(['現在のナンバー',summary.previousNumber || '—'],['変更後のナンバー',summary.number || '—']);
+        else rows.push(['車両ナンバー',summary.number || summary.previousNumber || '—']);
+        if(summary.operation === 'setStatus')rows.push(['変更後の状態',summary.active ? '運用中' : '運用外']);
+        if(summary.operation === 'add')rows.push(['車種',summary.model || '—'],['燃料',summary.fuelType || '—'],['初回メーター',distance(summary.initialOdometer)],['前回オイル交換時',distance(summary.initialOil)],['車検満了日',summary.inspectionDue || '未登録'],['マニュアル車（MT）',summary.requiresClutch ? '該当する' : '該当しない']);
+        container.replaceChildren();
+        rows.forEach(([label,value])=>{const row=document.createElement('div'),term=document.createElement('dt'),description=document.createElement('dd');row.className='review-item';text(term,label);text(description,value);if(label.includes('ナンバー'))description.className='review-number';row.append(term,description);container.append(row);});
+      }
+      async function preview(operation,form) {
+        if(locked() || !form.reportValidity())return;
+        showMessage('');let payload;
+        try {payload=payloadFor(operation);} catch(error) {showMessage(errorMessage(error));return;}
+        state.busy=true;updateControls();
+        try {
+          const data=await rpc({version:1,action:'preview',requestId:uuid(),operation:operation,payload:payload});
+          if(!data || !data.summary || data.summary.operation !== operation || data.expectedRevision === undefined)throw issue('INVALID_RESPONSE','確認内容を取得できませんでした。もう一度お試しください。');
+          state.review=freeze({operation:operation,payload:copy(payload),summary:copy(data.summary),expectedRevision:copy(data.expectedRevision)});
+          renderSummary($('review-list'),data.summary);text($('review-title'),operation === 'add' ? 'この車両を登録しますか？' : operation === 'setStatus' ? (data.summary.active ? 'この車両を運用に戻しますか？' : 'この車両を運用から外しますか？') : 'この内容で変更しますか？');
+          text($('review-note'),operation === 'add' ? '車両を一覧へ追加し、ひな形から専用の日報シートとリンクを作成します。' : operation === 'rename' ? '専用の日報シートと一覧のリンクを更新します。過去の日報は保持されます。' : data.summary.active ? 'この車両を、運転日報アプリで再び選択できる状態にします。過去の日報は保持されます。' : 'この車両を、運転日報アプリの車両選択から外します。過去の日報は保持され、後から運用に戻せます。');
+          sheetLink($('review-sheet-link'),data.summary.sheetUrl);$('review-confirmed').checked=false;text($('apply-button'),operation === 'add' ? 'この車両を登録する' : operation === 'setStatus' ? (data.summary.active ? '運用に戻す' : '運用から外す') : 'この内容で変更する');state.screen='review';
+        } catch(error) {showMessage(errorMessage(error));}
+        finally {state.busy=false;renderScreen();if(state.screen === 'review')$('review-title').focus();}
+      }
+      function showPending(error) {
+        state.screen='pending';renderSummary($('pending-list'),state.pending.summary);text($('pending-description'),error && error.code === 'FLEET_SAVE_PENDING' ? '保存処理が途中のため、同じ内容で結果を確認します。結果が分かるまで変更内容は編集できません。' : '送信した内容を保持しています。結果が分かるまで、変更内容は編集できません。');
+        $('pending-storage-note').hidden=state.pendingSaved;showMessage('');
+      }
+      async function apply() {
+        if(state.busy)return;
+        if(!state.pending) {
+          if(!state.review || !$('review-confirmed').checked)return;
+          try {
+            const request={version:1,action:'apply',requestId:uuid(),operation:state.review.operation,payload:copy(state.review.payload),expectedRevision:copy(state.review.expectedRevision)};
+            state.pending=freeze({adminEmail:state.data.adminEmail,masterUrl:state.data.masterUrl,request:request,summary:copy(state.review.summary)});savePending();
+          } catch(error) {showMessage(errorMessage(error));return;}
+        }
+        if(state.pending.adminEmail !== state.data.adminEmail || state.pending.masterUrl !== state.data.masterUrl){showMessage('この操作を開始した管理者のGoogleアカウントで開き直してください。');return;}
+        state.busy=true;showMessage('');showPending();updateControls();
+        try {
+          const data=await rpc(state.pending.request);
+          if(!data || !data.vehicle || !data.summary || typeof data.message !== 'string')throw issue('INVALID_RESPONSE','保存結果を確認できませんでした。');
+          const number=data.vehicle.number || data.summary.number || state.pending.summary.number;
+          clearPending();state.review=null;state.screen='success';text($('success-title'),data.message);text($('success-number'),number);sheetLink($('success-sheet-link'),data.sheetUrl || data.vehicle.sheetUrl);
+          const index=state.data.vehicles.findIndex(item=>item.id === data.vehicle.id);if(index < 0)state.data.vehicles.push(data.vehicle);else state.data.vehicles[index]=data.vehicle;
+          state.selectedId=data.vehicle.id;renderVehicles();renderSelected(true);
+          if(data.summary.operation === 'add')$('add-form').reset();
+        } catch(error) {
+          if(error.commitState !== 'pending' && safeFailures.has(error.code)) {clearPending();state.review=null;state.screen='editor';showMessage(errorMessage(error)+' 内容を確認して、もう一度お試しください。');}
+          else showPending(error);
+        } finally {state.busy=false;renderScreen();if(state.screen === 'pending')$('pending-title').focus();if(state.screen === 'success')$('success-title').focus();}
+      }
+      document.querySelectorAll('[role=tab]').forEach(tab=>{
+        tab.addEventListener('click',()=>{if(locked())return;state.viewSelections[state.operation]=state.selectedId;state.operation=tab.dataset.operation;state.selectedId=state.viewSelections[state.operation] || '';state.review=null;showMessage('');renderSelected(true);applySheetPanel(state.operation);renderVehicles();renderEditor();updateControls();});
+        tab.addEventListener('keydown',event=>{if(locked() || !['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const tabs=Array.from(document.querySelectorAll('[role=tab]'));const index=tabs.indexOf(tab);const next=event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length-1 : (index+(event.key === 'ArrowRight' ? 1 : -1)+tabs.length)%tabs.length;tabs[next].click();tabs[next].focus();});
+      });
+      $('vehicle-search').addEventListener('input',renderVehicles);
+      $('rename-form').addEventListener('submit',event=>{event.preventDefault();preview('rename',event.currentTarget);});
+      $('status-form').addEventListener('submit',event=>{event.preventDefault();preview('setStatus',event.currentTarget);});
+      $('add-form').addEventListener('submit',event=>{event.preventDefault();preview('add',event.currentTarget);});
+      $('review-confirmed').addEventListener('change',updateControls);
+      $('review-back').addEventListener('click',()=>{if(state.busy || state.pending)return;state.review=null;state.screen='editor';renderScreen();});
+      $('apply-button').addEventListener('click',apply);$('pending-retry').addEventListener('click',apply);
+      $('continue-button').addEventListener('click',()=>{state.screen='editor';renderScreen();loadBootstrap();});
+      $('reload-button').addEventListener('click',loadBootstrap);$('boot-retry').addEventListener('click',()=>{$('loading').querySelector('.spinner').hidden=false;loadBootstrap();});
+      $('dismiss-notice').addEventListener('click',()=>{state.noticeDismissed=true;if(state.data){try{localStorage.setItem('fleet-admin.notice.v1:'+state.data.adminEmail,'seen');}catch(_){}}$('first-notice').hidden=true;});
+      requestedView().then(view=>{state.operation=view;renderEditor();loadBootstrap();});
+    })();
+  </script>
+</body>
+</html>

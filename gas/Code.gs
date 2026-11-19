@@ -36,7 +36,11 @@ var TRIP_SCHEMA_ = {
   presence: ['酒気帯び(有/無)'], instructions: ['指示事項']
 };
 
-function doGet() {
+function doGet(e) {
+  if (e && e.parameter && e.parameter.view === 'fleet') {
+    fleetAdminAccess_();
+    return HtmlService.createHtmlOutputFromFile('FleetAdminView').setTitle('車両管理');
+  }
   return jsonOutput_({ ok: true, service: 'drive-log', version: DRIVE_LOG_.version });
 }
 
@@ -76,7 +80,7 @@ function processRequest_(request) {
     // Startup and the legacy self-profile action never initialize helpers.
     if (request.action === 'bootstrap' || request.action === 'lookupEmployee') {
       var readData = request.action === 'bootstrap' ? {
-        departments: DRIVE_LOG_.departments.slice(), vehicles: loadVehicles_(spreadsheet_()).map(publicVehicle_),
+        departments: DRIVE_LOG_.departments.slice(), vehicles: availableVehicles_(spreadsheet_()).map(publicVehicle_),
         serverTime: nowJst_(), employee: authenticatedEmployee_(auth)
       } : authenticatedEmployee_(auth, payload.employeeId);
       return { ok: true, data: readData, requestId: request.requestId };
@@ -85,6 +89,7 @@ function processRequest_(request) {
     try { lock.waitLock(25000); } catch (_) { fail_('BUSY', '処理が混み合っています。同じ操作をもう一度お試しください。'); }
     try {
       var ss = spreadsheet_();
+      fleetRecoverPending_(ss);
       var store = store_(ss);
       recoverPending_(ss, store);
       var mutating = request.action === 'startTrip' || request.action === 'finishTrip';
@@ -182,6 +187,10 @@ function startTrip_(ss, store, request, auth, fingerprint) {
   var p = request.payload || {};
   var employee = authenticatedEmployee_(auth, p.employeeId);
   var vehicle = requireVehicle_(ss, p.vehicleId);
+  if (!vehicle.active) fail_('VEHICLE_INACTIVE', 'この車両は運用対象外です。別の車両を選択してください。');
+  if (p.expectedVehicleNumber !== undefined ? normalizeId_(p.expectedVehicleNumber) !== normalizeId_(vehicle.number) : vehicle.id !== normalizeId_(vehicle.number)) {
+    fail_('VEHICLE_CHANGED', '車番が変更されています。車両を選び直してください。');
+  }
   if (activeTrip_(store, vehicle.id)) fail_('VEHICLE_IN_USE', 'この車両は運転中です。先の運転を終了してください。');
   var state = vehicleState_(ss, vehicle, store);
   if (state.latestEnd === null && vehicle.initialOdometer === null) fail_('INITIAL_ODOMETER_REQUIRED', 'この車両の初回確認時の距離を管理者が登録してから開始してください。');
@@ -512,12 +521,14 @@ function applyOperation_(ss, store, operation) {
 
 function vehicleContext_(ss, store, id) {
   var vehicle = requireVehicle_(ss, id);
+  var active = activeTrip_(store, vehicle.id);
+  if (!vehicle.active && !active) fail_('VEHICLE_INACTIVE', 'この車両は運用対象外です。別の車両を選択してください。');
   var state = vehicleState_(ss, vehicle, store);
   var start = state.latestEnd === null ? vehicle.initialOdometer : state.latestEnd;
   var current = state.latestEnd === null ? vehicle.initialOdometer : state.latestEnd;
   var oil = oilState_(vehicle.fuelType, state.latestOil === null ? vehicle.initialOil : state.latestOil, current);
   var v = publicVehicle_(vehicle); v.currentOdometer = current;
-  return { vehicle: v, activeTrip: publicTrip_(activeTrip_(store, vehicle.id)), oil: oil,
+  return { vehicle: v, activeTrip: publicTrip_(active), oil: oil,
     warnings: warnings_(vehicle, oil, nowJst_().slice(0, 10)), startOdometer: start };
 }
 
@@ -581,14 +592,18 @@ function loadVehicles_(ss) {
   var range = sheet.getRange(table.headerRow + 1, 1, count, table.width);
   var rows = range.getValues(), formulas = range.getFormulas();
   var displays = typeof range.getDisplayValues === 'function' ? range.getDisplayValues() : rows;
-  var optional = headerMap_(table.headers, { transmission: ['変速機', 'ミッション'] }, false);
-  var seen = {};
+  var optional = headerMap_(table.headers, { transmission: ['変速機', 'ミッション'], stableId: ['車両ID'], usage: ['使用状況'] }, false);
+  var seen = {}, seenNumbers = {};
   return rows.reduce(function (out, row, index) {
     var rawNumber = displays[index][table.map.number];
     if (blank_(rawNumber)) return out;
-    var id = normalizeId_(rawNumber);
-    if (seen[id]) fail_('SCHEMA_ERROR', '社用車一覧の車番が重複しています。');
+    var numberId = normalizeId_(rawNumber);
+    var id = optional.stableId != null && !blank_(row[optional.stableId]) ? normalizeId_(row[optional.stableId]) : numberId;
+    if (!id || seen[id] || seenNumbers[numberId]) fail_('SCHEMA_ERROR', '社用車一覧の車両IDまたは車番が重複しています。');
     seen[id] = true;
+    seenNumbers[numberId] = true;
+    var usage = optional.usage == null ? '' : normalizeId_(row[optional.usage]);
+    if (['', '使用中', '使用停止'].indexOf(usage) < 0) fail_('SCHEMA_ERROR', '社用車一覧の使用状況を確認してください。');
     var model = String(row[table.map.model] || '').normalize('NFKC').trim();
     var modelKeys = { 'ハイエース': 'hiace', 'ハイゼット': 'hijet', 'サクシード': 'succeed', 'プロボックス': 'probox', 'トヨエース': 'toyoace' };
     if (!modelKeys[model]) fail_('SCHEMA_ERROR', '社用車一覧の車種を確認してください。');
@@ -598,15 +613,21 @@ function loadVehicles_(ss) {
     var link = String(formulas[index][table.map.link] || row[table.map.link] || '');
     var exactGid = /[#?&]gid=(\d+)/.exec(link);
     out.push({ id: id, number: String(rawNumber).normalize('NFKC').replace(/\s+/g, ' ').trim(), model: model, modelKey: modelKeys[model],
-      fuelType: fuel, inspectionDue: dateValue_(row[table.map.inspection]),
+      fuelType: fuel, inspectionDue: dateValue_(row[table.map.inspection]), active: usage !== '使用停止',
       initialOil: numeric_(row[table.map.initialOil], '初回オイル交換距離', true),
       initialOdometer: numeric_(row[table.map.initialOdometer], '初回確認時の距離', true),
       currentOdometer: numeric_(row[table.map.currentOdometer], '現在の距離', true),
       requiresClutch: optional.transmission != null && normalizeId_(row[optional.transmission]).toUpperCase() === 'MT',
       sheetId: exactGid ? Number(exactGid[1]) : null,
-      masterSheet: sheet, masterRow: table.headerRow + 1 + index, masterMap: table.map });
+      masterSheet: sheet, masterRow: table.headerRow + 1 + index, masterMap: table.map, optionalMap: optional });
     return out;
   }, []);
+}
+
+function availableVehicles_(ss) {
+  var vehicles = loadVehicles_(ss);
+  var pending = fleetPendingVehicleIds_(ss);
+  return vehicles.filter(function (vehicle) { return vehicle.active && pending.indexOf(vehicle.id) < 0; });
 }
 
 function requireVehicle_(ss, id) {
@@ -618,8 +639,8 @@ function requireVehicle_(ss, id) {
 
 function resolveVehicleSheet_(ss, vehicle) {
   var sheet = vehicle.sheetId === null ? null : sheetById_(ss, vehicle.sheetId);
-  if (!sheet) sheet = ss.getSheets().filter(function (s) { return normalizeId_(s.getName()) === vehicle.id; })[0];
-  if (!sheet || [DRIVE_LOG_.master, DRIVE_LOG_.template, DRIVE_LOG_.trips, DRIVE_LOG_.requests].indexOf(sheet.getName()) >= 0) {
+  if (!sheet) sheet = ss.getSheets().filter(function (s) { return normalizeId_(s.getName()) === normalizeId_(vehicle.number); })[0];
+  if (!sheet || [DRIVE_LOG_.master, DRIVE_LOG_.template, DRIVE_LOG_.trips, DRIVE_LOG_.requests, FLEET_ADMIN_.journal].indexOf(sheet.getName()) >= 0) {
     fail_('SCHEMA_ERROR', '車両の運転日誌リンクを管理者が確認してください。');
   }
   return sheet;
@@ -712,7 +733,7 @@ function saveTrip_(store, trip) {
 
 function publicVehicle_(v) {
   return { id: v.id, number: v.number, model: v.model, modelKey: v.modelKey, fuelType: v.fuelType,
-    inspectionDue: v.inspectionDue, currentOdometer: v.currentOdometer === null ? v.initialOdometer : v.currentOdometer, requiresClutch: v.requiresClutch };
+    inspectionDue: v.inspectionDue, currentOdometer: v.currentOdometer === null ? v.initialOdometer : v.currentOdometer, requiresClutch: v.requiresClutch, active: v.active };
 }
 
 function publicTrip_(t) {

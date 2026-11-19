@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import { createHash } from 'node:crypto';
 
 const source = fs.readFileSync(new URL('../gas/Code.gs', import.meta.url), 'utf8');
+const fleetSource = fs.readFileSync(new URL('../gas/FleetAdmin.gs', import.meta.url), 'utf8');
 const ACCESS_KEY = 'test-only-key-never-use-in-production';
 const HEADERS = ['日付', '曜日', '運転前車両点検', '出発時間', '終了時間', '運転者', '行先', '出発メーター(km)', '終了メーター(km)', '走行距離(km)', '給油量(L)', 'オイル交換', '備考・不具合', '運転前対面確認者', '運転前検知器結果(mg/L)', '運転後対面確認者', '運転後検知器結果(mg/L)', '酒気帯び(有/無)', '指示事項'];
 const MASTER = ['現在の距離', '車種', '車検満了日', '車番', '運転日誌リンク', '初回確認時の距離', '種別', '初回確認時のオイル交換実施距離', '変速機'];
@@ -12,7 +13,7 @@ const own = (o, key, fallback) => Object.hasOwn(o, key) ? o[key] : fallback;
 const plain = value => JSON.parse(JSON.stringify(value));
 
 function fixture(options = {}) {
-  const env = { sheets: [], readSheetNames: [], fail: null, writes: [], lockCalls: 0, now: Date.parse('2026-11-12T00:05:00Z'), verifyCount: 0, verifyStatus: 'ok', requestCount: 0, typedSheets: !!options.typedSheets, sheetTimeZone: options.sheetTimeZone || 'Asia/Tokyo' };
+  const env = { sheets: [], readSheetNames: [], fail: null, writes: [], lockCalls: 0, now: Date.parse('2026-11-12T00:05:00Z'), verifyCount: 0, verifyStatus: 'ok', requestCount: 0, typedSheets: !!options.typedSheets, sheetTimeZone: options.sheetTimeZone || 'Asia/Tokyo', activeEmail: 'admin@example.invalid', effectiveEmail: 'admin@example.invalid', canEdit: true };
   class Range {
     constructor(sheet, r, c, rows = 1, cols = 1) { Object.assign(this, { sheet, r, c, rows, cols }); }
     raw(r, c) { return this.sheet.data[r - 1]?.[c - 1] ?? ''; }
@@ -30,6 +31,7 @@ function fixture(options = {}) {
       }));
     }
     getValue() { return this.getValues()[0][0]; }
+    canEdit() { return env.canEdit; }
     getDisplayValues() { return this.getValues().map(row => row.map(v => String(v))); }
     getFormulas() { return Array.from({ length: this.rows }, (_, i) => Array.from({ length: this.cols }, (_, j) => { const v = this.raw(this.r + i, this.c + j); return typeof v === 'string' && v.startsWith('=') ? v : ''; })); }
     setValue(value) { return this.setValues([[value]]); }
@@ -45,15 +47,30 @@ function fixture(options = {}) {
       return this;
     }
     setNumberFormat(format) { this.sheet.formats.set(`${this.r}:${this.c}`, format); return this; }
+    setDataValidation(rule) { this.sheet.validations.set(`${this.r}:${this.c}`, rule); return this; }
+    clearDataValidations() { this.sheet.validations.delete(`${this.r}:${this.c}`); return this; }
+    setBackground() { return this; }
+    setFontColor() { return this; }
+    setFontWeight() { return this; }
+    setFontFamily() { return this; }
+    setFontSize() { return this; }
+    setWrap() { return this; }
   }
   class Sheet {
-    constructor(name, id, data = []) { Object.assign(this, { name, id, data: data.map(r => [...r]), hidden: false, formats: new Map() }); env.sheets.push(this); }
+    constructor(name, id, data = []) { Object.assign(this, { name, id, data: data.map(r => [...r]), hidden: false, formats: new Map(), validations: new Map() }); env.sheets.push(this); }
     getName() { return this.name; }
+    setName(name) {
+      if (env.sheets.some(sheet => sheet !== this && sheet.name === name)) throw new Error('Duplicate sheet name');
+      this.name = name;
+      if (env.failRename) { env.failRename = false; throw new Error('Simulated lost rename acknowledgement'); }
+      return this;
+    }
     getSheetId() { return this.id; }
     getParent() { return env.ss; }
+    setColumnWidth() { return this; }
     getRange(...args) { return new Range(this, ...args); }
     getLastRow() { for (let i = this.data.length - 1; i >= 0; i--) if (this.data[i]?.some(v => v !== '' && v != null)) return i + 1; return 0; }
-    getLastColumn() { return Math.max(0, ...this.data.map(r => r.reduce((last, v, i) => v !== '' && v != null ? i + 1 : last, 0))); }
+    getLastColumn() { return Math.max(0, ...Array.from(this.data, r => r?.reduce((last, v, i) => v !== '' && v != null ? i + 1 : last, 0) ?? 0)); }
     hideSheet() { this.hidden = true; return this; }
     showSheet() { this.hidden = false; return this; }
     isSheetHidden() { return this.hidden; }
@@ -67,7 +84,12 @@ function fixture(options = {}) {
     getSpreadsheetTimeZone: () => env.sheetTimeZone,
     getSheetByName: name => { env.readSheetNames.push(name); return env.sheets.find(s => s.name === name) ?? null; },
     getSheets: () => env.sheets,
-    insertSheet: name => new Sheet(name, env.sheets.length + 100)
+    insertSheet: (name, options = {}) => {
+      if (env.sheets.some(sheet => sheet.name === name)) throw new Error('Duplicate sheet name');
+      const sheet = new Sheet(name, env.sheets.length + 100, options.template?.data ?? []);
+      if (env.failInsert) { env.failInsert = false; throw new Error('Simulated lost insert acknowledgement'); }
+      return sheet;
+    }
   };
   env.props = { SPREADSHEET_ID: 'test-workbook', ACCESS_KEY, ALLOWED_ORIGINS: '["https://example.github.io"]', KINJIRO_VERIFY_URL: 'https://verification.example.invalid/exec' };
   const cache = new Map();
@@ -77,8 +99,12 @@ function fixture(options = {}) {
   env.context = vm.createContext({
     Date: FixedDate,
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => env.props[key] ?? null }) },
-    SpreadsheetApp: { openById: id => { assert.equal(id, 'test-workbook'); return env.ss; }, flush: () => {} },
+    SpreadsheetApp: { openById: id => { assert.equal(id, 'test-workbook'); return env.ss; }, flush: () => {}, newDataValidation: () => {
+      const rule = {};
+      return { requireValueInList(values) { rule.values = [...values]; return this; }, setAllowInvalid(allow) { rule.allowInvalid = allow; return this; }, build() { return rule; } };
+    } },
     LockService: { getScriptLock: () => { env.lockCalls++; return { waitLock: () => { if (env.busy) throw new Error('locked'); }, releaseLock: () => {} }; } },
+    Session: { getActiveUser: () => ({ getEmail: () => env.activeEmail }), getEffectiveUser: () => ({ getEmail: () => env.effectiveEmail }) },
     Utilities: {
       getUuid: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, '0')}`,
       DigestAlgorithm: { SHA_256: 'sha256' }, computeDigest: (_, value) => [...createHash('sha256').update(value).digest()],
@@ -93,9 +119,10 @@ function fixture(options = {}) {
     CacheService: { getScriptCache: () => ({ get: key => cache.get(key), put: (key, value, ttl) => { env.cacheTtl = ttl; cache.set(key, value); } }) },
     UrlFetchApp: { fetch: (url, params) => { env.verifyCount++; env.verifyRequest = { url, params }; if (env.verifyThrow) throw new Error('offline'); const id = JSON.parse(params.payload).empId; return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ status: env.verifyStatus, code: env.verifyCode, empId: own(env, 'verifyEmployee', id), empName: own(env, 'verifyName', id === '0002' ? '佐藤 花子' : '山田 太郎') }) }; } },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: text => ({ text, setMimeType() { return this; } }) },
-    HtmlService: { XFrameOptionsMode: { ALLOWALL: 'allowall' }, createHtmlOutput: html => ({ html, setXFrameOptionsMode() { return this; } }) }
+    HtmlService: { XFrameOptionsMode: { ALLOWALL: 'allowall' }, createHtmlOutput: html => ({ html, setXFrameOptionsMode() { return this; } }), createHtmlOutputFromFile: file => ({ file, setTitle(title) { this.title = title; return this; } }) }
   });
   vm.runInContext(source, env.context, { filename: 'Code.gs' });
+  vm.runInContext(fleetSource, env.context, { filename: 'FleetAdmin.gs' });
   env.call = (action, payload = {}, opts = {}) => {
     const kinjiro = own(opts, 'kinjiro', { employeeId: '0001', token: 'default-test-device-token' });
     return plain(env.context.processRequest_({ version: 1, action, payload, requestId: opts.requestId ?? `request-${++env.requestCount}`, accessKey: own(opts, 'accessKey', ''), ...(kinjiro ? { kinjiro } : {}) }));
@@ -104,6 +131,8 @@ function fixture(options = {}) {
   env.cell = header => vehicle.getRange(2, HEADERS.indexOf(header) + 1).getValue();
   env.start = (payload = {}, opts = {}) => env.call('startTrip', { vehicleId: 'テスト410え8', department: '管理G', checks: Object.fromEntries(['brakes', 'tires', 'engine', 'battery', 'lights', 'washer', 'wipers', 'glass', 'body'].map(k => [k, true])), before: { confirmed: true, reading: null, presence: '無' }, ...payload }, opts);
   env.finish = (tripId, payload = {}, opts = {}) => env.call('finishTrip', { tripId, destination: '取引先', endOdometer: 120120, refueled: false, fuelLiters: null, oilChanged: false, notes: '', after: { confirmed: true, reading: null, presence: '無' }, ...payload }, opts);
+  env.admin = (action, operation, payload = {}, opts = {}) => plain(env.context.fleetAdminRpc({ version: 1, action, operation, payload, requestId: opts.requestId ?? `10000000-0000-4000-8000-${String(++env.requestCount).padStart(12, '0')}`, ...opts }));
+  env.install = () => plain(env.context.installFleetManagement_('https://script.google.com/macros/s/test-admin-deployment/exec'));
   return env;
 }
 
@@ -901,4 +930,303 @@ test('administrative preview rejects unrelated pending writes and does not initi
   assert.throws(() => f.context.previewCancelLatestTrip_(trip.id, '理由'), { driveLogCode: 'ADMIN_PENDING_REQUESTS' });
   assert.throws(() => f.context.cancelLatestTrip_(trip.id, '理由'), { driveLogCode: 'ADMIN_PENDING_REQUESTS' });
   assert.equal(f.writes.length, before);
+});
+
+function applyFleet(f, operation, payload, opts = {}) {
+  const preview = f.admin('preview', operation, payload);
+  assert.equal(preview.ok, true, JSON.stringify(preview));
+  return f.admin('apply', operation, payload, { expectedRevision: preview.data.expectedRevision, ...opts });
+}
+
+const NEW_CAR = { number: '架空500あ 22', model: 'プロボックス', fuelType: 'ガソリン', inspectionDue: '2028-02-29', initialOil: null, initialOdometer: 0, requiresClutch: false };
+
+test('fleet RPC and admin HTML require Google self execution and edit permission before any mutation', () => {
+  const f = fixture();
+  for (const [active, effective, canEdit, code] of [
+    ['', 'owner@example.invalid', true, 'UNAUTHORIZED'],
+    ['other@example.invalid', 'owner@example.invalid', true, 'UNAUTHORIZED'],
+    ['viewer@example.invalid', 'viewer@example.invalid', false, 'FORBIDDEN']
+  ]) {
+    Object.assign(f, { activeEmail: active, effectiveEmail: effective, canEdit });
+    assert.equal(f.admin('bootstrap').error.code, code);
+    assert.throws(() => f.context.doGet({ parameter: { view: 'fleet' } }), { driveLogCode: code });
+    assert.equal(f.writes.length, 0);
+  }
+  Object.assign(f, { activeEmail: 'admin@example.invalid', effectiveEmail: 'admin@example.invalid', canEdit: true });
+  const page = f.context.doGet({ parameter: { view: 'fleet' } });
+  assert.equal(page.file, 'FleetAdminView');
+  assert.equal(page.title, '車両管理');
+  assert.equal(page.xFrameOptionsMode, undefined);
+  assert.equal(f.call('fleetAdminRpc', { action: 'apply' }).error.code, 'VALIDATION_ERROR');
+});
+
+test('fleet installer preserves legacy identity and meter baselines and keeps J:P input cells on rerun', () => {
+  const blocked = fixture(); blocked.master.getRange(8, 12).setValue('既存の大事な資料');
+  const before = blocked.writes.length;
+  assert.throws(() => blocked.install(), { driveLogCode: 'PANEL_AREA_CONFLICT' });
+  assert.equal(blocked.writes.length, before);
+  const f = fixture(); const trip = f.start().data.trip; f.finish(trip.id);
+  assert.equal(f.install().installed, true);
+  const headers = f.master.data[0];
+  assert.equal(f.master.data[1][headers.indexOf('車両ID')], trip.vehicleId);
+  assert.equal(headers[16], '使用状況');
+  assert.equal(headers[8], '変速機');
+  assert.equal(f.master.data[1][MASTER.indexOf('初回確認時の距離')], 120000);
+  assert.equal(f.master.data[1][MASTER.indexOf('初回確認時のオイル交換実施距離')], 116000);
+  assert.equal(f.master.data[1][MASTER.indexOf('現在の距離')], 120120);
+  assert.equal(f.master.getRange(9, 10).getValue(), '運用から外す');
+  assert.match(f.master.getRange(9, 14).getFormulas()[0][0], /operation=stop/);
+  f.master.getRange(5, 11).setValue('テスト410え 8'); f.master.getRange(6, 11).setValue('新しい車番');
+  const columns = f.master.getLastColumn();
+  f.install();
+  assert.equal(f.master.getLastColumn(), columns);
+  assert.equal(f.master.getRange(6, 11).getValue(), '新しい車番');
+  assert.deepEqual(f.master.validations.get('5:11').values, ['テスト410え 8']);
+  assert.equal(f.call('bootstrap').data.vehicles[0].id, trip.vehicleId);
+  assert.equal(f.call('listHistory', { vehicleId: trip.vehicleId }).data.trips.length, 1);
+});
+
+test('initial fleet installation preserves an active trip, its receipts and its original gid through completion', () => {
+  const f = fixture();
+  const started = f.start({}, { requestId: 'active-before-fleet-install' });
+  const trip = started.data.trip;
+  const ledgerBefore = plain(f.ss.getSheetByName('_運転日報_記録管理').data);
+  const receiptsBefore = plain(f.ss.getSheetByName('_運転日報_リクエスト').data);
+  const visibleBefore = plain(f.vehicle.data);
+  assert.equal(f.install().installed, true);
+  assert.deepEqual(plain(f.ss.getSheetByName('_運転日報_記録管理').data), ledgerBefore);
+  assert.deepEqual(plain(f.ss.getSheetByName('_運転日報_リクエスト').data), receiptsBefore);
+  assert.deepEqual(plain(f.vehicle.data), visibleBefore);
+  assert.equal(f.master.data[1][f.master.data[0].indexOf('車両ID')], trip.vehicleId);
+  assert.equal(f.call('vehicleContext', { vehicleId: trip.vehicleId }).data.activeTrip.id, trip.id);
+  assert.deepEqual(f.start({}, { requestId: 'active-before-fleet-install' }), started);
+  assert.equal(f.admin('preview', 'rename', { vehicleId: trip.vehicleId, number: '架空400あ 33' }).error.code, 'VEHICLE_IN_USE');
+  assert.equal(f.admin('preview', 'setStatus', { vehicleId: trip.vehicleId, active: false }).error.code, 'VEHICLE_IN_USE');
+  const completed = f.finish(trip.id);
+  assert.equal(completed.ok, true);
+  assert.equal(completed.data.rowNumber, 2);
+  assert.match(completed.data.sheetUrl, /gid=21$/);
+});
+
+test('fleet initial installation still rejects pending saves and mismatched active-trip destination gids', () => {
+  const pending = fixture();
+  pending.fail = { sheet: '_運転日報_記録管理', row: 2, col: 1 };
+  assert.equal(pending.start().error.code, 'INTERNAL_ERROR');
+  let before = pending.writes.length;
+  assert.throws(() => pending.install(), { driveLogCode: 'VEHICLE_PENDING' });
+  assert.equal(pending.writes.length, before);
+  const mismatch = fixture(); mismatch.start();
+  const ledger = mismatch.ss.getSheetByName('_運転日報_記録管理');
+  const trip = JSON.parse(ledger.data[1][3]); trip.sheetId = 999999;
+  ledger.data[1][3] = JSON.stringify(trip);
+  before = mismatch.writes.length;
+  assert.throws(() => mismatch.install(), { driveLogCode: 'SCHEMA_ERROR' });
+  assert.equal(mismatch.writes.length, before);
+});
+
+test('fleet bootstrap and preview stay read-only and bootstrap reads optional spreadsheet-panel inputs', () => {
+  const f = fixture();
+  assert.equal(f.admin('preview', 'rename', { vehicleId: 'テスト410え8', number: '架空400あ 9' }).error.code, 'FLEET_NOT_INSTALLED');
+  f.install();
+  const writes = f.writes.length;
+  const boot = f.admin('bootstrap');
+  assert.equal(boot.data.adminEmail, 'admin@example.invalid');
+  assert.equal(boot.data.vehicles[0].active, true);
+  assert.equal(boot.data.models.length, 5);
+  assert.deepEqual(boot.data.panel, { rename: {}, stop: {}, restore: {}, add: {} });
+  const preview = f.admin('preview', 'rename', { vehicleId: 'テスト410え8', number: '架空400あ 9' });
+  assert.equal(preview.ok, true);
+  assert.equal(preview.data.summary.previousNumber, 'テスト410え 8');
+  assert.equal(typeof preview.data.expectedRevision, 'string');
+  assert.equal(f.writes.length, writes);
+  f.master.getRange(5, 11).setValue('テスト410え　8'); f.master.getRange(6, 11).setValue('架空400あ 9');
+  f.master.getRange(18, 11).setValue('架空500う 5'); f.master.getRange(19, 11).setValue('ハイゼット');
+  f.master.getRange(20, 11).setValue('軽油'); f.master.getRange(21, 11).setValue('2028-05-30');
+  f.master.getRange(22, 11).setValue(0); f.master.getRange(23, 11).setValue(10); f.master.getRange(24, 11).setValue('MT');
+  const panel = f.admin('bootstrap').data.panel;
+  assert.deepEqual(panel.rename, { vehicleId: 'テスト410え8', number: '架空400あ 9' });
+  assert.equal(panel.add.initialOil, 0);
+  assert.equal(panel.add.initialOdometer, 10);
+  assert.equal(panel.add.requiresClutch, true);
+});
+
+test('rename keeps stable ID, history, receipts and gid while new starts require the displayed current number', () => {
+  const f = fixture();
+  const first = f.start({}, { requestId: 'before-fleet-rename-start' });
+  f.finish(first.data.trip.id); f.install();
+  const id = first.data.trip.vehicleId, payload = { vehicleId: id, number: '架空400あ 99' };
+  const renamed = applyFleet(f, 'rename', payload);
+  assert.equal(renamed.ok, true, JSON.stringify(renamed));
+  assert.equal(renamed.data.vehicle.id, id);
+  assert.equal(renamed.data.vehicle.number, payload.number);
+  assert.equal(f.vehicle.getName(), payload.number);
+  assert.match(renamed.data.sheetUrl, /gid=21$/);
+  assert.match(f.master.getRange(2, MASTER.indexOf('運転日誌リンク') + 1).getFormulas()[0][0], /gid=21/);
+  assert.equal(f.master.data[1][0], 120120);
+  assert.equal(f.call('listHistory', { vehicleId: id }).data.trips[0].vehicleNumber, first.data.trip.vehicleNumber);
+  assert.deepEqual(f.start({}, { requestId: 'before-fleet-rename-start' }), first);
+  assert.equal(f.start().error.code, 'VEHICLE_CHANGED');
+  assert.equal(f.start({ expectedVehicleNumber: 'テスト410え 8' }).error.code, 'VEHICLE_CHANGED');
+  assert.equal(f.start({ expectedVehicleNumber: '架空400あ　99' }).data.trip.startOdometer, 120120);
+});
+
+test('retiring and restoring a vehicle updates driver choices and server guards without deleting history', () => {
+  const f = fixture(); const trip = f.start().data.trip; f.finish(trip.id); f.install();
+  f.master.getRange(6, 11).setValue('保持する入力');
+  const retired = applyFleet(f, 'setStatus', { vehicleId: trip.vehicleId, active: false });
+  assert.equal(retired.ok, true, JSON.stringify(retired));
+  assert.equal(retired.data.message, '運用から外しました。');
+  assert.equal(f.call('bootstrap').data.vehicles.length, 0);
+  assert.equal(f.admin('bootstrap').data.vehicles[0].active, false);
+  assert.equal(f.start().error.code, 'VEHICLE_INACTIVE');
+  assert.equal(f.call('vehicleContext', { vehicleId: trip.vehicleId }).error.code, 'VEHICLE_INACTIVE');
+  assert.equal(f.call('listHistory', { vehicleId: trip.vehicleId }).data.trips.length, 1);
+  assert.deepEqual(f.master.validations.get('14:11').values, ['テスト410え 8']);
+  assert.equal(f.master.getRange(6, 11).getValue(), '保持する入力');
+  assert.equal(applyFleet(f, 'setStatus', { vehicleId: trip.vehicleId, active: true }).ok, true);
+  assert.equal(f.call('bootstrap').data.vehicles.length, 1);
+  assert.equal(f.start().ok, true);
+});
+
+test('manual inactive status on an active trip still allows context and completion', () => {
+  const f = fixture(); f.install(); const trip = f.start().data.trip;
+  f.master.data[1][f.master.data[0].indexOf('使用状況')] = '使用停止';
+  assert.equal(f.call('vehicleContext', { vehicleId: trip.vehicleId }).data.activeTrip.id, trip.id);
+  assert.equal(f.finish(trip.id).ok, true);
+  assert.equal(f.call('vehicleContext', { vehicleId: trip.vehicleId }).error.code, 'VEHICLE_INACTIVE');
+});
+
+test('fleet rejects active trips and pending trip writes before accepting a management journal', () => {
+  for (const pending of [false, true]) {
+    const f = fixture(); f.install();
+    if (pending) f.fail = { sheet: '_運転日報_記録管理', row: 2, col: 1 };
+    f.start(); const before = f.writes.length;
+    const response = f.admin('preview', 'setStatus', { vehicleId: 'テスト410え8', active: false });
+    assert.equal(response.error.code, pending ? 'VEHICLE_PENDING' : 'VEHICLE_IN_USE');
+    assert.equal(f.writes.length, before);
+    assert.equal(f.ss.getSheetByName('_運転日報_車両管理').data.length, 1);
+  }
+});
+
+test('revision, duplicate numbers, illegal names and template data fail before journal acceptance', () => {
+  const f = fixture(); f.install();
+  const payload = { vehicleId: 'テスト410え8', number: '架空400あ 8' };
+  const preview = f.admin('preview', 'rename', payload);
+  f.master.data[1][0] = 54321;
+  const before = f.writes.length;
+  assert.equal(f.admin('apply', 'rename', payload, { expectedRevision: preview.data.expectedRevision }).error.code, 'REVISION_CONFLICT');
+  assert.equal(f.writes.length, before);
+  assert.equal(f.admin('preview', 'add', { ...NEW_CAR, number: 'テスト410え　8' }).error.code, 'DUPLICATE_VEHICLE_NUMBER');
+  for (const number of ['bad/name', '=DANGEROUS()', '_運転日報_車両管理']) assert.equal(f.admin('preview', 'add', { ...NEW_CAR, number }).error.code, 'VALIDATION_ERROR');
+  f.ss.insertSheet('架空500う 1');
+  assert.equal(f.admin('preview', 'add', { ...NEW_CAR, number: '架空500う 1' }).error.code, 'SHEET_NAME_CONFLICT');
+  f.ss.getSheetByName('運転日報ひな形').data.push(['2026-11-12']);
+  assert.equal(f.admin('preview', 'add', NEW_CAR).error.code, 'SCHEMA_ERROR');
+  assert.equal(f.ss.getSheetByName('_運転日報_車両管理').data.length, 1);
+});
+
+test('new vehicle copies the blank template, uses UUID identity and keeps zero versus unregistered oil', () => {
+  const f = fixture(); f.install();
+  assert.equal(f.admin('preview', 'add', { ...NEW_CAR, initialOdometer: null }).error.code, 'VALIDATION_ERROR');
+  const result = applyFleet(f, 'add', { ...NEW_CAR, requiresClutch: true });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const vehicle = result.data.vehicle;
+  assert.match(vehicle.id, /^[0-9a-f-]{36}$/);
+  assert.notEqual(vehicle.id, '架空500あ22');
+  assert.equal(vehicle.initialOdometer, 0); assert.equal(vehicle.currentOdometer, 0); assert.equal(vehicle.initialOil, null);
+  assert.equal(vehicle.requiresClutch, true);
+  const sheet = f.ss.getSheetByName(NEW_CAR.number);
+  assert.deepEqual(sheet.data[0], HEADERS);
+  assert.equal(sheet.getLastRow(), 1);
+  assert.match(result.data.sheetUrl, new RegExp(`gid=${sheet.id}$`));
+  assert.equal(f.call('bootstrap').data.vehicles.length, 2);
+  assert.equal(f.start({ vehicleId: vehicle.id }).error.code, 'VEHICLE_CHANGED');
+  assert.equal(f.start({ vehicleId: vehicle.id, expectedVehicleNumber: vehicle.number }).error.code, 'VALIDATION_ERROR');
+  const checks = Object.fromEntries(['brakes', 'tires', 'engine', 'battery', 'lights', 'washer', 'wipers', 'glass', 'body', 'clutch'].map(key => [key, true]));
+  assert.equal(f.start({ vehicleId: vehicle.id, expectedVehicleNumber: vehicle.number, checks }).data.trip.startOdometer, 0);
+});
+
+test('fleet apply replays its original response and binds immutable requests to their administrator', () => {
+  const f = fixture(); f.install();
+  const payload = { ...NEW_CAR };
+  const preview = f.admin('preview', 'add', payload);
+  const opts = { expectedRevision: preview.data.expectedRevision, requestId: '22222222-2222-4222-8222-222222222222' };
+  const result = f.admin('apply', 'add', payload, opts);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const sheets = f.sheets.length, writes = f.writes.length;
+  assert.deepEqual(f.admin('apply', 'add', payload, opts), result);
+  assert.equal(f.sheets.length, sheets); assert.equal(f.writes.length, writes);
+  assert.equal(f.admin('apply', 'add', { ...payload, number: '別の車番' }, opts).error.code, 'REQUEST_ID_REUSED');
+  f.activeEmail = f.effectiveEmail = 'other-editor@example.invalid';
+  assert.equal(f.admin('apply', 'add', payload, opts).error.code, 'REQUEST_ID_REUSED');
+});
+
+test('new-vehicle registration recovers lost acknowledgements without a duplicate sheet or master row', () => {
+  for (const stage of ['insert', 'gid', 'rename', 'master', 'response', 'commit']) {
+    const f = fixture(); f.install();
+    const preview = f.admin('preview', 'add', NEW_CAR);
+    const opts = { expectedRevision: preview.data.expectedRevision, requestId: '33333333-3333-4333-8333-333333333333' };
+    const newRow = f.master.getLastRow() + 1;
+    if (stage === 'insert') f.failInsert = true;
+    if (stage === 'gid') f.fail = { sheet: '_運転日報_車両管理', row: 2, col: 5, after: true };
+    if (stage === 'rename') f.failRename = true;
+    if (stage === 'master') f.fail = { sheet: '社用車一覧', row: newRow, col: 1, after: true };
+    if (stage === 'response') f.fail = { sheet: '_運転日報_車両管理', row: 2, col: 6, after: true };
+    if (stage === 'commit') f.fail = { sheet: '_運転日報_車両管理', row: 2, col: 4, after: true };
+    const first = f.admin('apply', 'add', NEW_CAR, opts);
+    assert.equal(first.error?.code, 'FLEET_SAVE_PENDING', stage + JSON.stringify(first));
+    const writes = f.writes.length;
+    const boot = f.call('bootstrap');
+    assert.equal(boot.ok, true, stage + JSON.stringify(boot));
+    assert.equal(f.writes.length, writes, 'driver startup must not recover');
+    if (stage !== 'commit') assert.equal(boot.data.vehicles.length, 1, 'pending new vehicle must stay private');
+    const retry = f.admin('apply', 'add', NEW_CAR, opts);
+    assert.equal(retry.ok, true, stage + JSON.stringify(retry));
+    assert.equal(f.sheets.filter(sheet => sheet.name === NEW_CAR.number).length, 1);
+    assert.equal(f.master.data.filter(row => row[f.master.data[0].indexOf('車両ID')] === retry.data.vehicle.id).length, 1);
+    assert.equal(f.ss.getSheetByName('_運転日報_車両管理').data.length, 2);
+  }
+});
+
+test('driver stateful access recovers pending rename and startup hides that target without writing', () => {
+  const f = fixture(); f.install();
+  const payload = { vehicleId: 'テスト410え8', number: '架空400あ 80' };
+  const preview = f.admin('preview', 'rename', payload);
+  const opts = { expectedRevision: preview.data.expectedRevision, requestId: '44444444-4444-4444-8444-444444444444' };
+  f.failRename = true;
+  assert.equal(f.admin('apply', 'rename', payload, opts).error.code, 'FLEET_SAVE_PENDING');
+  const writes = f.writes.length;
+  assert.equal(f.call('bootstrap').data.vehicles.length, 0);
+  assert.equal(f.writes.length, writes);
+  assert.equal(f.call('vehicleContext', { vehicleId: payload.vehicleId }).data.vehicle.number, payload.number);
+  assert.equal(f.master.data[1][MASTER.indexOf('車番')], payload.number);
+  assert.equal(f.admin('apply', 'rename', payload, opts).ok, true);
+});
+
+test('management recovery refuses changed meters rather than restoring the old form snapshot', () => {
+  const f = fixture(); f.install();
+  const payload = { vehicleId: 'テスト410え8', number: '架空400あ 81' };
+  const preview = f.admin('preview', 'rename', payload);
+  const opts = { expectedRevision: preview.data.expectedRevision, requestId: '55555555-5555-4555-8555-555555555555' };
+  f.failRename = true; f.admin('apply', 'rename', payload, opts);
+  f.master.data[1][0] = 999999;
+  const retry = f.admin('apply', 'rename', payload, opts);
+  assert.equal(retry.error.code, 'FLEET_SAVE_PENDING');
+  assert.equal(retry.error.causeCode, 'ROW_CONFLICT');
+  assert.equal(f.master.data[1][0], 999999);
+  assert.equal(f.ss.getSheetByName('_運転日報_車両管理').data[1][3], 'pending');
+});
+
+test('an already accepted fleet request remains pending even when the master schema later breaks', () => {
+  const f = fixture(); f.install();
+  const payload = { vehicleId: 'テスト410え8', number: '架空400あ 82' };
+  const preview = f.admin('preview', 'rename', payload);
+  const opts = { expectedRevision: preview.data.expectedRevision, requestId: '66666666-6666-4666-8666-666666666666' };
+  f.failRename = true;
+  assert.equal(f.admin('apply', 'rename', payload, opts).error.code, 'FLEET_SAVE_PENDING');
+  f.master.data[0][f.master.data[0].indexOf('車両ID')] = '管理列を手変更';
+  const retry = f.admin('apply', 'rename', payload, opts);
+  assert.equal(retry.error.code, 'FLEET_SAVE_PENDING');
+  assert.equal(retry.error.commitState, 'pending');
+  assert.equal(retry.error.causeCode, 'FLEET_NOT_INSTALLED');
 });

@@ -12,7 +12,7 @@ const MODELS = new Set(['hiace', 'hijet', 'succeed', 'probox', 'toyoace']);
 const STORE = `drive-log:${isDemo ? 'preview' : 'live'}:v1:`;
 const PERSONAL_KEYS = new Set(['draft', 'pending-start', 'pending-finish', 'active-trip']);
 let storageEmployeeId = '';
-const DEFINITIVE_ERRORS = new Set(['VALIDATION_ERROR', 'EMPLOYEE_NOT_FOUND', 'VEHICLE_NOT_FOUND', 'INITIAL_ODOMETER_REQUIRED', 'VEHICLE_IN_USE', 'TRIP_NOT_FOUND', 'TRIP_ALREADY_COMPLETED', 'TRIP_CANCELLED', 'ODOMETER_DECREASE', 'REQUEST_ID_REUSED', 'EMPLOYEE_MISMATCH', 'UNAUTHORIZED', 'KINJIRO_SESSION_EXPIRED', 'CONFIGURATION_ERROR', 'UNCONFIGURED', 'ROW_CONFLICT', 'SCHEMA_ERROR', 'ALCOHOL_PRESENT']);
+const DEFINITIVE_ERRORS = new Set(['VALIDATION_ERROR', 'EMPLOYEE_NOT_FOUND', 'VEHICLE_NOT_FOUND', 'VEHICLE_INACTIVE', 'VEHICLE_CHANGED', 'INITIAL_ODOMETER_REQUIRED', 'VEHICLE_IN_USE', 'TRIP_NOT_FOUND', 'TRIP_ALREADY_COMPLETED', 'TRIP_CANCELLED', 'ODOMETER_DECREASE', 'REQUEST_ID_REUSED', 'EMPLOYEE_MISMATCH', 'UNAUTHORIZED', 'KINJIRO_SESSION_EXPIRED', 'CONFIGURATION_ERROR', 'UNCONFIGURED', 'ROW_CONFLICT', 'SCHEMA_ERROR', 'ALCOHOL_PRESENT']);
 const state = {
   phase: 'loading', vehicles: [], departments: [], context: null, contextLoading: false,
   employee: null, favorites: [], trip: null, busy: false,
@@ -76,6 +76,8 @@ function errorMessage(error) {
   if (error?.code === 'KINJIRO_VERIFICATION_UNAVAILABLE') return '本人確認の通信ができませんでした。入力を保持しています。少し待って再度お試しください。';
   if (error?.code === 'ROW_CONFLICT') return '記録の行が変更されているため保存を止めました。入力は保持されています。管理担当者に確認してください。';
   if (error?.code === 'TRIP_CANCELLED') return 'この運転記録は管理担当者によって取り消されています。車両を選び直して、最新のメーターを確認してください。';
+  if (error?.code === 'VEHICLE_INACTIVE') return 'この車両は運用から外されています。最新の一覧から車両を選び直してください。';
+  if (error?.code === 'VEHICLE_CHANGED') return '車両ナンバーが変更されました。最新の一覧から車両を選び直してください。';
   if (error?.code === 'SCHEMA_ERROR') return '車両台帳の内容を確認できません。入力は保持されています。管理担当者に確認してください。';
   return error?.message || '通信できませんでした。入力を保持しています。電波状況をご確認ください。';
 }
@@ -106,7 +108,7 @@ function checks() {
   return result;
 }
 function startPayload() {
-  return { vehicleId: $('vehicle').value, employeeId: state.employee?.id || '', department: $('department').value, checks: checks(), before: alcohol('before') };
+  return { vehicleId: $('vehicle').value, expectedVehicleNumber: currentVehicle()?.number || '', employeeId: state.employee?.id || '', department: $('department').value, checks: checks(), before: alcohol('before') };
 }
 function finishPayload() {
   return { tripId: state.trip?.id, department: $('department').value, destination: $('destination').value.trim(), endOdometer: numberOrNull($('end-odometer').value), refueled: $('refueled').checked, fuelLiters: $('refueled').checked ? numberOrNull($('fuel-liters').value) : null, oilChanged: $('oil-changed').checked, notes: $('notes').value.trim(), after: alcohol('after') };
@@ -303,14 +305,22 @@ async function continueSelection() {
   clearError(); saveDraft(); const generation = ++contextGeneration; state.contextLoading = false; state.busy = true; renderControls();
   try {
     const vehicleId = $('vehicle').value;
+    const selectedVehicleNumber = currentVehicle()?.number;
     const context = await api.vehicleContext(vehicleId);
     if (generation !== contextGeneration || $('vehicle').value !== vehicleId) return;
     const route = resolveJourney(context, vehicleId);
+    if (context.vehicle.number !== selectedVehicleNumber) throw { code: 'VEHICLE_CHANGED' };
     applyVehicleContext(context);
     if (route.phase === 'active') enterTrip(route.trip);
     else showDeparture();
     if (context.warnings?.length) showWarnings(context.warnings);
-  } catch (error) { state.context = null; state.phase = 'select'; showError(error); }
+  } catch (error) {
+    state.context = null; state.phase = 'select';
+    if (['VEHICLE_INACTIVE', 'VEHICLE_CHANGED'].includes(error?.code)) {
+      await initialize();
+      if (state.phase === 'select') showError(error);
+    } else showError(error);
+  }
   finally { state.busy = false; renderControls(); }
 }
 function returnToSelection() {
@@ -443,13 +453,21 @@ async function loadVehicle({ warnings = true } = {}) {
     const context = await api.vehicleContext(vehicle.id);
     if (generation !== contextGeneration || $('vehicle').value !== String(vehicle.id)) return;
     resolveJourney(context, vehicle.id);
+    if (context.vehicle.number !== vehicle.number) throw { code: 'VEHICLE_CHANGED' };
     state.context = context;
     if (context.vehicle) {
       const index = state.vehicles.findIndex(item => String(item.id) === String(vehicle.id));
       state.vehicles[index] = { ...state.vehicles[index], ...context.vehicle };
     }
     if (warnings && context.warnings?.length && state.phase === 'start') showWarnings(context.warnings);
-  } catch (error) { if (generation === contextGeneration) showError(error); }
+  } catch (error) {
+    if (generation === contextGeneration) {
+      if (['VEHICLE_INACTIVE', 'VEHICLE_CHANGED'].includes(error?.code)) {
+        await initialize();
+        if (state.phase === 'select') showError(error);
+      } else showError(error);
+    }
+  }
   finally { if (generation === contextGeneration) { state.contextLoading = false; renderVehicle(); renderControls(); } }
 }
 function showWarnings(warnings) {
@@ -495,6 +513,11 @@ async function submitStart(retry = false) {
     toast(isDemo ? 'プレビュー：出発画面を切り替えました' : '出発を記録しました');
   } catch (error) {
     if (DEFINITIVE_ERRORS.has(error?.code)) { state.pendingStart = null; writeStore('pending-start', null); }
+    if (['VEHICLE_INACTIVE', 'VEHICLE_CHANGED'].includes(error?.code)) {
+      await initialize();
+      if (state.phase === 'select') showError(error);
+      return;
+    }
     if (error?.code === 'TRIP_CANCELLED') {
       state.trip = null; state.phase = 'select'; resetVehicleSelection(); writeStore('active-trip', null); ++contextGeneration; renderVehicle();
     }
