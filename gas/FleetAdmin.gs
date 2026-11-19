@@ -354,7 +354,7 @@ function fleetInstallPanel_(ss, url) {
   var labels = { 1: '社用車 管理ツール', 2: '入力後、右の「内容を確認・実行」を押してください', 3: '運転中・保存中の車両は変更できません',
     4: '番号変更', 5: '対象車両', 6: '新しい車番', 9: '運用から外す', 10: '対象車両',
     13: '運用に戻す', 14: '対象車両', 17: '新規追加', 18: '車番', 19: '車種', 20: '燃料',
-    21: '車検満了日', 22: '初回オイル交換距離', 23: '初回確認時の距離', 24: '変速機 (AT/MT)' };
+    21: '車検満了日', 22: '前回オイル交換時メーター (km)', 23: '初回確認時の距離 (km)', 24: '変速機 (AT/MT)' };
   Object.keys(labels).forEach(function (row) { master.getRange(Number(row), 10).setValue(labels[row]); });
   [[4, 'rename'], [9, 'stop'], [13, 'restore'], [17, 'add']].forEach(function (entry) {
     master.getRange(entry[0], 14).setValue('=HYPERLINK("' + url + '&operation=' + entry[1] + '","内容を確認・実行")');
@@ -365,6 +365,7 @@ function fleetInstallPanel_(ss, url) {
   master.getRange(1, 10).setFontSize(14).setFontWeight('bold');
   [5, 6, 10, 14, 18, 19, 20, 21, 22, 23, 24].forEach(function (row) { master.getRange(row, 11).setBackground('#edf3ff'); });
   master.setColumnWidth(10, 210); master.setColumnWidth(11, 230); master.setColumnWidth(14, 190);
+  [12, 13, 15, 16].forEach(function (column) { master.setColumnWidth(column, 16); });
   master.getRange(21, 11).setNumberFormat('yyyy-mm-dd');
   [22, 23].forEach(function (row) { master.getRange(row, 11).setNumberFormat('0'); });
   fleetRefreshPanel_(ss);
