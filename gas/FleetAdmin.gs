@@ -397,7 +397,7 @@ function fleetLegacyLabels_() {
 function fleetManagementLabels_() {
   return { '2:2': FLEET_ADMIN_.panel, '5:2': '車番を変更', '5:6': '運用から外す', '14:2': '運用に戻す', '14:6': '車両を追加',
     '8:2': '対象車両', '9:2': '新しい車番', '8:6': '対象車両', '17:2': '対象車両', '17:6': '車番', '18:6': '車種', '19:6': '燃料',
-    '20:6': '車検満了日（任意）', '21:6': '前回オイル交換 km\n（任意）', '22:6': '初回距離 km', '23:6': '変速機' };
+    '20:6': '車検満了日（任意）', '21:6': '前回オイル交換時\nの距離 km（任意）', '22:6': '初回距離 km', '23:6': '変速機' };
 }
 
 function fleetManagementButtons_() {
@@ -490,8 +490,9 @@ function fleetInstallPanel_(ss, url) {
   if (!sheet) sheet = ss.insertSheet(FLEET_ADMIN_.panel, ss.getSheetByName(DRIVE_LOG_.master).getIndex());
   sheet.getRange(2, 2).setValue(FLEET_ADMIN_.panel); // An interrupted stage can be safely resumed.
   sheet.getRange(1, 1, 27, 9).breakApart().clearFormat().setBackground('#faf9f6').setFontFamily('Arial').setFontSize(10).setFontColor('#253247').setWrap(true).setVerticalAlignment('middle');
-  [16, 116, 192, 16, 30, 116, 192, 16, 16].forEach(function (width, index) { sheet.setColumnWidth(index + 1, width); });
+  [16, 136, 172, 16, 30, 136, 172, 16, 16].forEach(function (width, index) { sheet.setColumnWidth(index + 1, width); });
   for (var row = 1; row <= 27; row++) sheet.setRowHeight(row, 24);
+  [6, 7, 15, 16].forEach(function (row) { sheet.setRowHeight(row, 9); });
   sheet.setRowHeight(2, 34); sheet.setRowHeight(21, 36);
   sheet.setHiddenGridlines(true);
   [[5, 2, 7, 3], [5, 6, 7, 3], [14, 2, 7, 3], [14, 6, 12, 3]].forEach(function (card) {
@@ -505,7 +506,7 @@ function fleetInstallPanel_(ss, url) {
   });
   Object.keys(FLEET_ADMIN_.inputs).forEach(function (key) {
     var position = FLEET_ADMIN_.inputs[key];
-    sheet.getRange(position[0], position[1]).setValue(values[key]).setBackground('#edf1f8').setBorder(false, false, true, false, false, false, '#aebbd1', null);
+    sheet.getRange(position[0], position[1]).setValue(values[key]).setBackground('#edf1f8').setBorder(null, null, true, null, null, null, '#aebbd1', null);
   });
   sheet.getRange(20, 7).setNumberFormat('yyyy-mm-dd');
   [21, 22].forEach(function (row) { sheet.getRange(row, 7).setNumberFormat('0'); });
