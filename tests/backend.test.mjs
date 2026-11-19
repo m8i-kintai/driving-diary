@@ -1106,6 +1106,10 @@ test('compaction validates every transmission value and unrelated cell before mo
   const before = plain(f.master.data);
   assert.throws(() => f.compact(), { driveLogCode: 'SCHEMA_ERROR' });
   assert.deepEqual(plain(f.master.data), before);
+  const missing = compactFixture(); missing.master.getRange(2, 9).setValue('');
+  const missingBefore = plain(missing.master.data);
+  assert.throws(() => missing.compact(), { driveLogCode: 'SCHEMA_ERROR' });
+  assert.deepEqual(plain(missing.master.data), missingBefore);
 });
 
 test('compaction refuses pending management saves and retries an acknowledged column move safely', () => {
