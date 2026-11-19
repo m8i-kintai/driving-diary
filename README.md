@@ -88,6 +88,8 @@ Hのリンク先gidを優先して車両シートを解決し、リンクが使�
 
 設置時は同じApps Scriptプロジェクトへ `gas/FleetAdmin.gs` と `gas/FleetAdminView.html` を追加し、マニフェストに `userinfo.email` スコープを追加します。従来の運転日報APIを対応版へ更新したうえで、管理用Webアプリを別デプロイとして**アクセス本人として実行**する設定で公開します。通常の日報APIへ管理操作を追加しません。管理者が非公開の `installFleetManagement_('<FLEET_ADMIN_EXEC_URL>')` を一度実行すると、既存IDの固定とJ〜P列の表を設置します。再実行でも入力欄を保持します。
 
+管理用URLは通常の `/macros/s/<DEPLOYMENT_ID>/exec` とWorkspaceの `/a/macros/<WORKSPACE_DOMAIN>/s/<DEPLOYMENT_ID>/exec` の両形式に対応します。複数アカウント利用時は正常に開ける形式を指定し、`authuser=2` のようなブラウザ依存のアカウント番号は固定しません。
+
 全管理RPCはGoogle本人実行と対象ブックの編集権限を確認し、日報APIと同じScriptLockで処理します。管理操作の通信ID・変更前後・実行者は `_運転日報_車両管理` に保存します。公開・権限の仕組みは [Google公式のWebアプリ実行権限](https://developers.google.com/apps-script/guides/web#permissions)、[Session](https://developers.google.com/apps-script/reference/base/session)、[Range.canEdit](https://developers.google.com/apps-script/reference/spreadsheet/range#canEdit()) を参照してください。
 
 ### 運転者情報

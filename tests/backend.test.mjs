@@ -986,6 +986,25 @@ test('fleet installer preserves legacy identity and meter baselines and keeps J:
   assert.equal(f.call('listHistory', { vehicleId: trip.vehicleId }).data.trips.length, 1);
 });
 
+test('fleet installer preserves Workspace-scoped links without pinning a browser account number', () => {
+  const base = 'https://script.google.com/a/macros/workspace.example/s/test-admin-deployment/exec';
+  for (const suffix of ['', '?view=fleet']) {
+    const f = fixture();
+    const result = plain(f.context.installFleetManagement_(base + suffix));
+    assert.equal(result.adminUrl, base + '?view=fleet');
+    for (const [row, operation] of [[4, 'rename'], [9, 'stop'], [13, 'restore'], [17, 'add']]) {
+      const formula = f.master.getRange(row, 14).getFormulas()[0][0];
+      assert.equal(formula, `=HYPERLINK("${base}?view=fleet&operation=${operation}","内容を確認・実行")`);
+      assert.doesNotMatch(formula, /authuser=|\/u\/\d+\//);
+    }
+  }
+  const rejected = fixture();
+  for (const url of [base + '?view=fleet&authuser=2', 'https://script.google.com/macros/u/2/s/test-admin-deployment/exec', 'https://script.google.com.evil.example/macros/s/test-admin-deployment/exec']) {
+    assert.throws(() => rejected.context.installFleetManagement_(url), { driveLogCode: 'VALIDATION_ERROR' });
+  }
+  assert.equal(rejected.writes.length, 0);
+});
+
 test('initial fleet installation preserves an active trip, its receipts and its original gid through completion', () => {
   const f = fixture();
   const started = f.start({}, { requestId: 'active-before-fleet-install' });

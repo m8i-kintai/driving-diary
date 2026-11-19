@@ -310,7 +310,8 @@ function fleetWriteNewMasterRow_(meta, row, fields) {
 // preserves every existing vehicle ID and never rewrites odometer baselines.
 function installFleetManagement_(adminUrl) {
   var access = fleetAdminAccess_();
-  if (typeof adminUrl !== 'string' || !/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec(?:\?view=fleet)?$/.test(adminUrl)) fail_('VALIDATION_ERROR', '管理用Webアプリの公開URLを指定してください。');
+  var adminUrlPattern = /^https:\/\/script\.google\.com\/(?:macros|a\/macros\/(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63})\/s\/[A-Za-z0-9_-]+\/exec(?:\?view=fleet)?$/;
+  if (typeof adminUrl !== 'string' || !adminUrlPattern.test(adminUrl)) fail_('VALIDATION_ERROR', '管理用Webアプリの公開URLを指定してください。');
   var lock = LockService.getScriptLock(); lock.waitLock(25000);
   try {
     var ss = access.ss, vehicles = loadVehicles_(ss), master = ss.getSheetByName(DRIVE_LOG_.master);
