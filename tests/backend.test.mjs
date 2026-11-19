@@ -1046,6 +1046,109 @@ function compactFixture(options = {}) {
   return f;
 }
 
+function fleetSizeFixture(count) {
+  const f = fixture();
+  for (let index = 2; index <= count; index++) {
+    const number = `架空500あ ${index}`, sheet = f.ss.insertSheet(number);
+    sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
+    const row = [...f.master.data[1]];
+    row[MASTER.indexOf('車番')] = number;
+    row[MASTER.indexOf('運転日誌リンク')] = `=HYPERLINK("https://docs.google.com/spreadsheets/d/test-workbook/edit#gid=${sheet.getSheetId()}","運転日リンク")`;
+    f.master.data.push(row);
+  }
+  f.install();
+  return f;
+}
+
+function fleetReadCounter(f) {
+  const counts = {};
+  for (const [owner, prefix, names] of [[f.ss, 'spreadsheet', ['getSheets']], [f.master, 'master', ['getLastRow', 'getLastColumn', 'getRange']]]) {
+    for (const name of names) {
+      const original = owner[name].bind(owner);
+      owner[name] = (...args) => { const key = `${prefix}.${name}`; counts[key] = (counts[key] || 0) + 1; return original(...args); };
+    }
+  }
+  return { counts, reset() { Object.keys(counts).forEach(key => { delete counts[key]; }); } };
+}
+
+test('a fifty-vehicle bootstrap and stop preview keep spreadsheet reads bounded and carry the selected vehicle', () => {
+  const results = [];
+  for (const size of [1, 50]) {
+    const f = fleetSizeFixture(size), number = size === 1 ? 'テスト410え 8' : `架空500あ ${size}`;
+    f.ss.getSheetByName('車両管理ツール').getRange(8, 7).setValue(number);
+    const counter = fleetReadCounter(f);
+    const boot = f.admin('bootstrap');
+    assert.equal(boot.ok, true); assert.equal(boot.data.vehicles.length, size);
+    const payload = boot.data.panel.stop;
+    assert.equal(payload.active, false);
+    const selected = boot.data.vehicles.find(vehicle => vehicle.id === payload.vehicleId);
+    assert.ok(selected); assert.equal(selected.number, number);
+    const bootstrapReads = { ...counter.counts };
+    counter.reset();
+    const preview = f.admin('preview', 'setStatus', payload);
+    assert.equal(preview.ok, true);
+    assert.equal(preview.data.summary.vehicleId, selected.id); assert.equal(preview.data.summary.number, number);
+    assert.equal(preview.data.summary.active, false);
+    assert.equal(typeof preview.data.expectedRevision, 'string'); assert.ok(preview.data.expectedRevision);
+    results.push({ bootstrap: bootstrapReads, preview: { ...counter.counts } });
+    const repeated = f.admin('preview', 'setStatus', payload);
+    assert.equal(repeated.data.expectedRevision, preview.data.expectedRevision);
+    assert.equal(f.ss.getSheetByName('_運転日報_車両管理').getLastRow(), 1, 'opening a stop confirmation must not save a change');
+  }
+  for (const phase of ['bootstrap', 'preview']) for (const key of ['spreadsheet.getSheets', 'master.getLastRow', 'master.getLastColumn', 'master.getRange']) {
+    assert.ok((results[1][phase][key] || 0) <= (results[0][phase][key] || 0) + 2, `${phase} ${key} must not grow per vehicle: ${JSON.stringify(results)}`);
+  }
+  for (const result of results) for (const phase of ['bootstrap', 'preview']) {
+    assert.ok((result[phase]['master.getRange'] || 0) <= 4, `${phase} must read the master in a bounded batch`);
+    assert.ok((result[phase]['spreadsheet.getSheets'] || 0) <= 1, `${phase} must build the sheet index once`);
+  }
+});
+
+test('bulk fleet loading preserves authentication, reserved-gid rejection and stop revision conflicts', () => {
+  const f = fleetSizeFixture(50);
+  const boot = f.admin('bootstrap'), selected = boot.data.vehicles.at(-1), payload = { vehicleId: selected.id, active: false };
+  const preview = f.admin('preview', 'setStatus', payload); assert.equal(preview.ok, true);
+  const row = f.master.data.findIndex(values => values[f.master.data[0].indexOf('車両ID')] === selected.id) + 1;
+  f.master.getRange(row, MASTER.indexOf('現在の距離') + 1).setValue(999999);
+  assert.equal(f.admin('apply', 'setStatus', payload, { expectedRevision: preview.data.expectedRevision }).error.code, 'REVISION_CONFLICT');
+  assert.equal(f.admin('bootstrap').data.vehicles.find(vehicle => vehicle.id === selected.id).active, true);
+  const before = f.writes.length;
+  f.activeEmail = '';
+  assert.equal(f.admin('bootstrap').error.code, 'UNAUTHORIZED');
+  assert.equal(f.admin('preview', 'setStatus', payload).error.code, 'UNAUTHORIZED');
+  f.activeEmail = f.effectiveEmail;
+  f.canEdit = false;
+  assert.equal(f.admin('bootstrap').error.code, 'FORBIDDEN');
+  f.canEdit = true;
+  assert.equal(f.writes.length, before);
+  const template = f.ss.getSheetByName('運転日報ひな形');
+  f.master.getRange(row, MASTER.indexOf('運転日誌リンク') + 1).setValue(`=HYPERLINK("https://docs.google.com/spreadsheets/d/test-workbook/edit#gid=${template.getSheetId()}","運転日リンク")`);
+  assert.equal(f.admin('bootstrap').error.code, 'SCHEMA_ERROR');
+  assert.equal(f.admin('preview', 'setStatus', payload).error.code, 'SCHEMA_ERROR');
+});
+
+test('stale stop and restore selections return notices instead of silently selecting another vehicle', () => {
+  const f = compactFixture(); f.compact(); f.install();
+  const sheet = f.ss.getSheetByName('車両管理ツール');
+  sheet.getRange(8, 7).setValue('架空500う 2');
+  sheet.getRange(17, 3).setValue('テスト410え 8');
+  const before = f.writes.length;
+  const mismatch = f.admin('bootstrap'); assert.equal(mismatch.ok, true);
+  for (const [operation, id] of [['stop', 'legacy-stopped-car'], ['restore', 'テスト410え8']]) {
+    const panel = mismatch.data.panel[operation];
+    assert.equal(typeof panel.notice, 'string'); assert.ok(panel.notice.trim());
+    if (panel.vehicleId) assert.equal(panel.vehicleId, id);
+  }
+  assert.equal(f.writes.length, before);
+  assert.equal(mismatch.data.vehicles.find(vehicle => vehicle.id === 'legacy-stopped-car').active, false);
+  assert.equal(mismatch.data.vehicles.find(vehicle => vehicle.id === 'テスト410え8').active, true);
+  sheet.getRange(8, 7).setValue('テスト410え 8');
+  sheet.getRange(17, 3).setValue('架空500う 2');
+  const ordinary = f.admin('bootstrap');
+  assert.deepEqual(ordinary.data.panel.stop, { vehicleId: 'テスト410え8', active: false });
+  assert.deepEqual(ordinary.data.panel.restore, { vehicleId: 'legacy-stopped-car', active: true });
+});
+
 test('compacting legacy I/Q/R preserves business cells, active trips, IDs, gids and inactive vehicles', () => {
   const f = compactFixture();
   const started = f.start({}, { requestId: 'start-before-master-compact' }); assert.equal(started.ok, true);

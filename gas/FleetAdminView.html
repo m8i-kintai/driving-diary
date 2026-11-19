@@ -97,7 +97,8 @@
         return new Promise((resolve,reject) => {
           let settled=false;
           const finish=(fn,value)=>{if(settled)return;settled=true;clearTimeout(timer);fn(value);};
-          const timer=setTimeout(()=>finish(reject,issue('TIMEOUT','応答を確認できませんでした。')),30000);
+          const timeoutMs=request.action === 'bootstrap' ? 45000 : 30000;
+          const timer=setTimeout(()=>finish(reject,issue('TIMEOUT','応答を確認できませんでした。')),timeoutMs);
           if(navigator.onLine === false) return finish(reject,issue('NETWORK_ERROR','インターネット接続を確認してください。'));
           if(!window.google || !google.script || !google.script.run) return finish(reject,issue('CLIENT_UNAVAILABLE','スプレッドシートの「車両管理」から開いてください。'));
           try {
@@ -117,7 +118,7 @@
         element.href=url.href;element.hidden=false;
       }
       function text(element,value) { element.textContent=value === null || value === undefined ? '' : String(value); }
-      function showMessage(message) { text($('global-message'),message);$('global-message').hidden=!message; }
+      function showMessage(message,kind) { const box=$('global-message');text(box,message);box.hidden=!message;box.classList.toggle('notice-error',kind !== 'info');box.classList.toggle('notice-info',kind === 'info');box.setAttribute('role',kind === 'info' ? 'status' : 'alert'); }
       function errorMessage(error) { return error && error.message ? String(error.message).slice(0,600) : '処理を完了できませんでした。'; }
       function vehicle() { return state.data && state.data.vehicles.find(item=>item.id === state.selectedId); }
       function badge(element,active) { text(element,active ? '運用中' : '運用外');element.classList.toggle('is-inactive',!active);element.hidden=false; }
@@ -239,7 +240,7 @@
           if(state.pending){renderSummary($('pending-list'),state.pending.summary);$('pending-storage-note').hidden=state.pendingSaved;}
           $('loading').hidden=true;$('app-content').hidden=false;
         } catch(error) {
-          if(initial){text($('loading-title'),'車両情報を読み込めませんでした');text($('loading-description'),errorMessage(error));$('boot-retry').hidden=false;$('loading').querySelector('.spinner').hidden=true;}
+          if(initial){const slow=error.code === 'TIMEOUT';text($('loading-title'),slow ? '読み込みに時間がかかっています' : '車両情報を読み込めませんでした');text($('loading-description'),slow ? '少し待ってから「もう一度読み込む」を押してください。' : errorMessage(error));$('boot-retry').hidden=false;$('loading').querySelector('.spinner').hidden=true;}
           else showMessage(errorMessage(error));
         } finally {state.busy=false;renderScreen();}
         await reviewSheetLink(initial);
@@ -250,6 +251,8 @@
         try {management=new URL(state.data.managementUrl);master=new URL(state.data.masterUrl);} catch (_) {return;}
         if(management.protocol !== 'https:' || management.hostname !== 'docs.google.com' || !management.pathname.startsWith('/spreadsheets/d/') || management.href === master.href)return;
         const operation=['stop','restore'].includes(state.operation) ? 'setStatus' : state.operation;
+        const panel=state.data.panel && state.data.panel[state.operation];
+        if(panel && typeof panel.notice === 'string' && panel.notice.trim()){showMessage(panel.notice.slice(0,600),'info');$('vehicle-search').focus();return;}
         if(operation !== 'add' && !vehicle()){showMessage('対象の車両を選択してください。');$('vehicle-search').focus();return;}
         const form=$(operation === 'add' ? 'add-form' : operation === 'rename' ? 'rename-form' : 'status-form');
         if(!form.checkValidity()) {

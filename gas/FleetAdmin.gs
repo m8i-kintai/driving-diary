@@ -24,7 +24,7 @@ function fleetAdminRpc(request) {
     lock = LockService.getScriptLock();
     try { lock.waitLock(25000); } catch (_) { lock = null; fail_('BUSY', '処理中です。少し待って再度お試しください。'); }
     var ss = access.ss;
-    if (request.action === 'bootstrap') return { ok: true, data: fleetBootstrap_(ss, access.email), requestId: request.requestId };
+    if (request.action === 'bootstrap') return { ok: true, data: fleetBootstrap_(ss, access.email, fleetReadContext_(ss)), requestId: request.requestId };
     var journal = ss.getSheetByName(FLEET_ADMIN_.journal);
     var existing = journal && findRequest_(journal, request.requestId);
     var fingerprint = stableJson_({ operation: request.operation, payload: request.payload || {}, expectedRevision: request.expectedRevision });
@@ -37,8 +37,7 @@ function fleetAdminRpc(request) {
       return fleetFinishJournal_(ss, journal, existing.row, JSON.parse(existing.values[4]));
     }
     if (journal) fleetValidateJournal_(journal);
-    fleetRequireInstalled_(ss);
-    var plan = fleetPlan_(ss, request, access.email);
+    var plan = fleetPlan_(ss, request, access.email, fleetReadContext_(ss));
     if (request.action === 'preview') return { ok: true, data: { summary: plan.summary, expectedRevision: plan.revision }, requestId: request.requestId };
     if (typeof request.expectedRevision !== 'string' || request.expectedRevision !== plan.revision) fail_('REVISION_CONFLICT', '車両情報が変更されました。読み直して確認してください。');
     journal = fleetJournal_(ss, true);
@@ -76,53 +75,69 @@ function fleetValidateRequest_(request) {
   }
 }
 
-function fleetBootstrap_(ss, email) {
-  var vehicles = loadVehicles_(ss);
+// A request-local snapshot, never persisted or shared with another execution.
+function fleetReadContext_(ss) {
+  var read = { byGid: Object.create(null), byName: Object.create(null), byNumber: Object.create(null), sheetNames: Object.create(null) };
+  read.vehicles = loadVehicles_(ss, read);
+  read.lastRow = read.table.headerRow + read.rows.length;
+  ss.getSheets().forEach(function (sheet) {
+    var gid = String(sheet.getSheetId()), name = sheet.getName(), number = normalizeId_(name);
+    read.byGid[gid] = sheet; read.byName[name] = sheet; read.sheetNames[gid] = name;
+    if (!read.byNumber[number]) read.byNumber[number] = sheet;
+  });
+  return read;
+}
+
+function fleetBootstrap_(ss, email, read) {
+  read = read || fleetReadContext_(ss);
+  var vehicles = read.vehicles;
   var pending = fleetPendingVehicleIds_(ss);
   var management = ss.getSheetByName(FLEET_ADMIN_.panel);
   var masterUrl = sheetUrl_(ss, ss.getSheetByName(DRIVE_LOG_.master).getSheetId());
-  return { adminEmail: email, vehicles: vehicles.filter(function (v) { return pending.indexOf(v.id) < 0; }).map(function (v) { return fleetPublicVehicle_(ss, v); }),
+  return { adminEmail: email, vehicles: vehicles.filter(function (v) { return pending.indexOf(v.id) < 0; }).map(function (v) { return fleetPublicVehicle_(ss, v, read, true); }),
     models: FLEET_ADMIN_.models.slice(), fuels: ['ガソリン', '軽油'], masterUrl: masterUrl,
     managementUrl: fleetPanelInstalled_(management) ? sheetUrl_(ss, management.getSheetId()) : masterUrl, panel: fleetReadPanel_(ss, vehicles) };
 }
 
-function fleetPublicVehicle_(ss, vehicle) {
-  var sheet = resolveVehicleSheet_(ss, vehicle);
-  return Object.assign({}, publicVehicle_(vehicle), { initialOil: vehicle.initialOil, initialOdometer: vehicle.initialOdometer,
-    currentOdometer: vehicle.currentOdometer, sheetUrl: sheetUrl_(ss, sheet.getSheetId()), revision: fleetRevision_(ss, vehicle) });
+function fleetPublicVehicle_(ss, vehicle, read, omitRevision) {
+  var sheet = resolveVehicleSheet_(ss, vehicle, read);
+  var result = Object.assign({}, publicVehicle_(vehicle), { initialOil: vehicle.initialOil, initialOdometer: vehicle.initialOdometer,
+    currentOdometer: vehicle.currentOdometer, sheetUrl: sheetUrl_(ss, sheet.getSheetId()) });
+  if (!omitRevision) result.revision = fleetRevision_(ss, vehicle, read);
+  return result;
 }
 
-function fleetVehicleSnapshot_(ss, vehicle) {
-  var sheet = resolveVehicleSheet_(ss, vehicle);
+function fleetVehicleSnapshot_(ss, vehicle, read) {
+  var sheet = resolveVehicleSheet_(ss, vehicle, read);
   return { id: vehicle.id, number: vehicle.number, model: vehicle.model, fuelType: vehicle.fuelType,
     inspectionDue: vehicle.inspectionDue, initialOil: vehicle.initialOil, initialOdometer: vehicle.initialOdometer,
     currentOdometer: vehicle.currentOdometer, requiresClutch: vehicle.requiresClutch, active: vehicle.active,
-    masterRow: vehicle.masterRow, sheetId: sheet.getSheetId(), sheetName: sheet.getName() };
+    masterRow: vehicle.masterRow, sheetId: sheet.getSheetId(), sheetName: read ? read.sheetNames[String(sheet.getSheetId())] : sheet.getName() };
 }
 
-function fleetRevision_(ss, vehicle) {
-  return sha256_(stableJson_({ headers: table_(vehicle.masterSheet, MASTER_SCHEMA_).headers, vehicle: fleetVehicleSnapshot_(ss, vehicle) }));
+function fleetRevision_(ss, vehicle, read) {
+  return sha256_(stableJson_({ headers: read ? read.table.headers : table_(vehicle.masterSheet, MASTER_SCHEMA_).headers, vehicle: fleetVehicleSnapshot_(ss, vehicle, read) }));
 }
 
-function fleetAddRevision_(ss) {
-  var master = ss.getSheetByName(DRIVE_LOG_.master), template = ss.getSheetByName(DRIVE_LOG_.template);
-  fleetValidateTemplate_(template);
-  return sha256_(stableJson_({ headers: table_(master, MASTER_SCHEMA_).headers,
-    vehicles: loadVehicles_(ss).map(function (v) { return fleetVehicleSnapshot_(ss, v); }),
-    lastRow: master.getLastRow(), templateId: template.getSheetId(), templateHeaders: table_(template, TRIP_SCHEMA_).headers }));
+function fleetAddRevision_(ss, read) {
+  read = read || fleetReadContext_(ss);
+  var template = read.byName[DRIVE_LOG_.template], templateTable = fleetValidateTemplate_(template);
+  return sha256_(stableJson_({ headers: read.table.headers,
+    vehicles: read.vehicles.map(function (v) { return fleetVehicleSnapshot_(ss, v, read); }),
+    lastRow: read.lastRow, templateId: template.getSheetId(), templateHeaders: templateTable.headers }));
 }
 
-function fleetRequireInstalled_(ss) {
-  var master = ss.getSheetByName(DRIVE_LOG_.master), table = table_(master, MASTER_SCHEMA_);
+function fleetRequireInstalled_(ss, read) {
+  read = read || fleetReadContext_(ss);
+  var master = read.master, table = read.table;
   var optional = headerMap_(table.headers, FLEET_ADMIN_.optional, false);
   if (optional.stableId == null || optional.usage == null) fail_('FLEET_NOT_INSTALLED', '管理者による車両管理の初期設定が必要です。');
-  var count = master.getLastRow() - table.headerRow;
-  if (count > 0 && master.getRange(table.headerRow + 1, 1, count, table.width).getValues().some(function (row) {
+  if (read.rows.some(function (row) {
     return !blank_(row[table.map.number]) && blank_(row[optional.stableId]);
   })) fail_('FLEET_NOT_INSTALLED', '既存車両の車両IDを先に固定してください。');
   var gids = {};
-  loadVehicles_(ss).forEach(function (v) {
-    var gid = resolveVehicleSheet_(ss, v).getSheetId();
+  read.vehicles.forEach(function (v) {
+    var gid = resolveVehicleSheet_(ss, v, read).getSheetId();
     if (gids[gid]) fail_('SCHEMA_ERROR', '複数の車両が同じ日報シートを参照しています。');
     gids[gid] = true;
   });
@@ -136,9 +151,10 @@ function fleetNumber_(value) {
   return number;
 }
 
-function fleetPlan_(ss, request, email) {
-  var meta = fleetRequireInstalled_(ss), p = request.payload;
-  var vehicles = loadVehicles_(ss), vehicle = null, sheet = null;
+function fleetPlan_(ss, request, email, read) {
+  read = read || fleetReadContext_(ss);
+  var meta = fleetRequireInstalled_(ss, read), p = request.payload;
+  var vehicles = read.vehicles, vehicle = null, sheet = null;
   var summary = { operation: request.operation }, operation = { requestId: request.requestId, operation: request.operation,
     adminEmail: email, createdAt: nowJst_(), headerToken: stableJson_(meta.table.headers) };
   var revision;
@@ -147,12 +163,11 @@ function fleetPlan_(ss, request, email) {
     var number = fleetNumber_(p.number);
     if (FLEET_ADMIN_.models.indexOf(p.model) < 0 || ['ガソリン', '軽油'].indexOf(p.fuelType) < 0) fail_('VALIDATION_ERROR', '車種・燃料を確認してください。');
     var inspection = dateValue_(p.inspectionDue), initialOil = numeric_(p.initialOil, '初回オイル交換距離', true), initial = numeric_(p.initialOdometer, '初回確認時の距離', false);
-    fleetAssertNumberFree_(ss, vehicles, number, null);
-    fleetValidateTemplate_(ss.getSheetByName(DRIVE_LOG_.template));
-    revision = fleetAddRevision_(ss);
-    Object.assign(operation, { vehicleId: request.requestId.toLowerCase(), masterRow: meta.sheet.getLastRow() + 1, sheetId: null,
+    fleetAssertNumberFree_(ss, vehicles, number, null, read);
+    revision = fleetAddRevision_(ss, read);
+    Object.assign(operation, { vehicleId: request.requestId.toLowerCase(), masterRow: read.lastRow + 1, sheetId: null,
       temporarySheetName: '_車両登録_' + request.requestId.toLowerCase(), sheetName: number,
-      templateId: ss.getSheetByName(DRIVE_LOG_.template).getSheetId(), before: null,
+      templateId: read.byName[DRIVE_LOG_.template].getSheetId(), before: null,
       fields: { number: number, model: p.model, fuel: p.fuelType, inspection: inspection,
         initialOil: initialOil, initialOdometer: initial, currentOdometer: initial, stableId: request.requestId.toLowerCase(), usage: '使用中', transmission: 'AT' } });
     Object.assign(summary, { vehicleId: '', previousNumber: '', number: number, active: true, model: p.model, fuelType: p.fuelType,
@@ -162,14 +177,14 @@ function fleetPlan_(ss, request, email) {
     if (!vehicle) fail_('VEHICLE_NOT_FOUND', '車両を選び直してください。');
     fleetAssertVehicleIdle_(ss, vehicle.id);
     if (fleetPendingVehicleIds_(ss).indexOf(vehicle.id) >= 0) fail_('VEHICLE_PENDING', 'この車両の管理処理を保存中です。同じ操作を再送してください。');
-    sheet = resolveVehicleSheet_(ss, vehicle);
-    revision = fleetRevision_(ss, vehicle);
+    sheet = resolveVehicleSheet_(ss, vehicle, read);
+    revision = fleetRevision_(ss, vehicle, read);
     Object.assign(operation, { vehicleId: vehicle.id, masterRow: vehicle.masterRow, sheetId: sheet.getSheetId(),
-      sheetName: sheet.getName(), previousSheetName: sheet.getName(), before: fleetVehicleSnapshot_(ss, vehicle), fields: {} });
-    Object.assign(summary, fleetPublicVehicle_(ss, vehicle), { operation: request.operation, vehicleId: vehicle.id, previousNumber: vehicle.number });
+      sheetName: sheet.getName(), previousSheetName: sheet.getName(), before: fleetVehicleSnapshot_(ss, vehicle, read), fields: {} });
+    Object.assign(summary, fleetPublicVehicle_(ss, vehicle, read), { operation: request.operation, vehicleId: vehicle.id, previousNumber: vehicle.number });
     if (request.operation === 'rename') {
       var changedNumber = fleetNumber_(p.number);
-      fleetAssertNumberFree_(ss, vehicles, changedNumber, vehicle.id);
+      fleetAssertNumberFree_(ss, vehicles, changedNumber, vehicle.id, read);
       operation.fields.number = changedNumber; operation.sheetName = changedNumber;
       summary.number = changedNumber;
     } else {
@@ -181,10 +196,10 @@ function fleetPlan_(ss, request, email) {
   return { summary: summary, operation: operation, revision: revision };
 }
 
-function fleetAssertNumberFree_(ss, vehicles, number, exceptId) {
+function fleetAssertNumberFree_(ss, vehicles, number, exceptId, read) {
   if (vehicles.some(function (v) { return v.id !== exceptId && normalizeId_(v.number) === normalizeId_(number); })) fail_('DUPLICATE_VEHICLE_NUMBER', '同じ車番が既に登録されています。');
   var named = ss.getSheetByName(number);
-  if (named && (!exceptId || resolveVehicleSheet_(ss, vehicles.filter(function (v) { return v.id === exceptId; })[0]).getSheetId() !== named.getSheetId())) {
+  if (named && (!exceptId || resolveVehicleSheet_(ss, vehicles.filter(function (v) { return v.id === exceptId; })[0], read).getSheetId() !== named.getSheetId())) {
     fail_('SHEET_NAME_CONFLICT', '同じ名前のシートがあります。車番を確認してください。');
   }
 }
@@ -574,13 +589,24 @@ function fleetReadPanel_(ss, vehicles) {
   if (rename) result.rename = { vehicleId: rename.id, number: String(values.renameNumber || '') };
   if (stop) result.stop = { vehicleId: stop.id, active: false };
   if (restore) result.restore = { vehicleId: restore.id, active: true };
+  if (!stop && selected('stopVehicle', false)) result.stop = { notice: 'この車両はすでに運用から外れています。' };
+  if (!restore && selected('restoreVehicle', true)) result.restore = { notice: 'この車両はすでに運用中です。' };
   if (['number', 'model', 'fuel', 'inspection', 'initialOil', 'initialOdometer'].some(function (key) { return !blank_(values[key]); })) {
     var inspection = values.inspection;
     try { inspection = dateValue_(inspection); } catch (_) { inspection = String(inspection || ''); }
     result.add = { number: String(values.number || ''), model: String(values.model || ''), fuelType: String(values.fuel || ''), inspectionDue: inspection,
-      initialOil: blank_(values.initialOil) ? null : values.initialOil, initialOdometer: blank_(values.initialOdometer) ? null : values.initialOdometer };
+      initialOil: fleetPanelNumberValue_(values.initialOil), initialOdometer: fleetPanelNumberValue_(values.initialOdometer) };
   }
   return result;
+}
+
+// An accidentally date-formatted input must not make google.script.run reject
+// the complete response. Keep valid numeric/blank input unchanged.
+function fleetPanelNumberValue_(value) {
+  if (blank_(value)) return null;
+  if (typeof value === 'number' && isFinite(value) || typeof value === 'string') return value;
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) return value.toISOString();
+  return String(value);
 }
 
 // Stage two: run only after the new deployment and its dedicated tab work.

@@ -583,14 +583,16 @@ function clockMilliseconds_(value) {
   return ((Number(match[1]) * 60 + Number(match[2])) * 60 + Number(match[3] || 0)) * 1000 + Number((match[4] || '').padEnd(3, '0'));
 }
 
-function loadVehicles_(ss) {
+function loadVehicles_(ss, readContext) {
   var sheet = ss.getSheetByName(DRIVE_LOG_.master);
   if (!sheet) fail_('SCHEMA_ERROR', '社用車一覧シートが見つかりません。');
   var table = table_(sheet, MASTER_SCHEMA_);
+  if (readContext) { readContext.master = sheet; readContext.table = table; readContext.rows = []; }
   var count = sheet.getLastRow() - table.headerRow;
   if (count <= 0) return [];
   var range = sheet.getRange(table.headerRow + 1, 1, count, table.width);
   var rows = range.getValues(), formulas = range.getFormulas();
+  if (readContext) readContext.rows = rows;
   var displays = typeof range.getDisplayValues === 'function' ? range.getDisplayValues() : rows;
   var optional = headerMap_(table.headers, { transmission: ['変速機', 'ミッション'], stableId: ['車両ID'], usage: ['使用状況'] }, false);
   var seen = {}, seenNumbers = {};
@@ -637,10 +639,11 @@ function requireVehicle_(ss, id) {
   return vehicle;
 }
 
-function resolveVehicleSheet_(ss, vehicle) {
-  var sheet = vehicle.sheetId === null ? null : sheetById_(ss, vehicle.sheetId);
-  if (!sheet) sheet = ss.getSheets().filter(function (s) { return normalizeId_(s.getName()) === normalizeId_(vehicle.number); })[0];
-  if (!sheet || [DRIVE_LOG_.master, DRIVE_LOG_.template, DRIVE_LOG_.trips, DRIVE_LOG_.requests, FLEET_ADMIN_.journal, FLEET_ADMIN_.panel].indexOf(sheet.getName()) >= 0) {
+function resolveVehicleSheet_(ss, vehicle, readContext) {
+  var sheet = vehicle.sheetId === null ? null : readContext ? readContext.byGid[String(vehicle.sheetId)] : sheetById_(ss, vehicle.sheetId);
+  if (!sheet) sheet = readContext ? readContext.byNumber[normalizeId_(vehicle.number)] : ss.getSheets().filter(function (s) { return normalizeId_(s.getName()) === normalizeId_(vehicle.number); })[0];
+  var name = sheet && (readContext ? readContext.sheetNames[String(sheet.getSheetId())] : sheet.getName());
+  if (!sheet || [DRIVE_LOG_.master, DRIVE_LOG_.template, DRIVE_LOG_.trips, DRIVE_LOG_.requests, FLEET_ADMIN_.journal, FLEET_ADMIN_.panel].indexOf(name) >= 0) {
     fail_('SCHEMA_ERROR', '車両の運転日誌リンクを管理者が確認してください。');
   }
   return sheet;
